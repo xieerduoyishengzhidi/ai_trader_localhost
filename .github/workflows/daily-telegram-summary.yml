@@ -1,0 +1,101 @@
+name: 每日 Telegram 群组摘要
+
+on:
+  schedule:
+    # 每天 UTC 23:00 运行（中国时间早上 7:00，UTC+8）
+    # 如需调整时间，修改 cron 表达式：分钟 小时 日 月 星期
+    # 例如：'0 7 * * *' 表示每天 UTC 7:00（中国时间 15:00）
+    - cron: '0 23 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  fetch-and-summarize:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        working-directory: telegram插件
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 恢复 Telegram Session 文件
+        working-directory: telegram插件
+        env:
+          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+        run: |
+          if [ -n "$TELEGRAM_SESSION" ]; then
+            echo "$TELEGRAM_SESSION" | base64 -d > telegram_session.session
+            echo "✅ Session 文件已恢复"
+          else
+            echo "⚠️ 未配置 TELEGRAM_SESSION secret，将需要首次登录"
+          fi
+
+      - name: 运行 Telegram 消息抓取和摘要
+        working-directory: telegram插件
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT || 'nofx_dev_community' }}
+          TELEGRAM_LIMIT: ${{ secrets.TELEGRAM_LIMIT || '2000' }}
+        run: |
+          python fetch_tg_ai.py --chat "$TELEGRAM_CHAT" --limit "$TELEGRAM_LIMIT"
+          
+          # 检查输出文件
+          if [ -d "output" ]; then
+            echo "输出文件已生成"
+            ls -la output/
+          fi
+
+      - name: 上传输出文件
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-summary-${{ github.run_number }}
+          path: telegram插件/output/*
+          retention-days: 30
+
+      - name: 发送 Telegram 通知
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            STATUS_EMOJI="✅"
+            STATUS_TEXT="成功"
+            # 读取最新的摘要文件
+            LATEST_SUMMARY=$(ls -t telegram插件/output/summary_*.txt 2>/dev/null | head -1)
+            if [ -n "$LATEST_SUMMARY" ]; then
+              # 获取摘要的前500字符作为预览
+              SUMMARY_PREVIEW=$(head -c 500 "$LATEST_SUMMARY" | sed 's/"/\\"/g')
+              MESSAGE="*每日 Telegram 群组摘要*\n\n${STATUS_EMOJI} 状态: ${STATUS_TEXT}\n\n📄 摘要预览:\n\`\`\`\n${SUMMARY_PREVIEW}...\n\`\`\`\n\n📊 完整摘要已上传到 GitHub Actions Artifacts"
+            else
+              MESSAGE="*每日 Telegram 群组摘要*\n\n${STATUS_EMOJI} 状态: ${STATUS_TEXT}\n\n⚠️ 未找到摘要文件"
+            fi
+          else
+            STATUS_EMOJI="❌"
+            STATUS_TEXT="失败"
+            MESSAGE="*每日 Telegram 群组摘要*\n\n${STATUS_EMOJI} 状态: ${STATUS_TEXT}\n\n请查看 GitHub Actions 日志获取详细信息"
+          fi
+          
+          # 发送通知到 Telegram
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHAT_ID}" \
+              -d "text=${MESSAGE}" \
+              -d "parse_mode=Markdown" \
+              -d "disable_web_page_preview=true"
+          else
+            echo "⚠️ 未配置 Telegram Bot Token 或 Chat ID，跳过通知"
+          fi
+

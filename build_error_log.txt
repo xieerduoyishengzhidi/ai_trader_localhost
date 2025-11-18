@@ -1,0 +1,66 @@
+构建错误汇总（最近一次 docker compose up -d --build）
+=======================================================
+
+1. 2025-11-06 最新错误
+----------------------
+- 命令：docker compose up -d --build
+- 阶段：backend-builder 8/8，命令 `go build`
+- BuildKit 错误：`error committing ... metadata_v2.db: input/output error`
+- 可能原因：Docker Desktop 的 BuildKit 缓存写入失败（磁盘空间不足、Docker 虚拟磁盘损坏、BuildKit 进程异常等）。
+
+2. 之前的相关错误（编译阶段）
+------------------------------
+- 错误：`fatal error: error writing to /tmp/cc*.s: I/O error`
+- 说明：同样是在 BuildKit 的 tmp 目录写入失败，多数与宿主机存储或 Docker 虚拟磁盘空间有关。
+
+排查建议
+--------
+1. 检查宿主机磁盘剩余空间（尤其是 Docker 数据盘）。
+2. 打开 Docker Desktop → Settings → Resources，确认磁盘大小是否耗尽；必要时扩大或清理。
+3. 执行 Docker 清理命令：
+   ```powershell
+   docker system prune -af
+   docker builder prune -af
+   ```
+4. 重启 Docker Desktop（必要时重启电脑）。
+5. 如果仍失败，可暂时禁用 BuildKit：
+   ```powershell
+   $env:DOCKER_BUILDKIT=0
+   docker build --no-cache -f docker/Dockerfile.backend -t nofx-backend-debug .
+   ```
+   观察是否仍出现 I/O 错误。
+
+
+3. 终端 1019-1023 报错说明（与 Python 无关）
+-------------------------------------------
+- 原始输出：
+  ```
+  target nofx: failed to receive status: rpc error: code = Unavailable desc = error reading from server: EOF
+  
+  View build details: docker-desktop://dashboard/build/default/default/qgbubcttuq63xrvabwczh331e
+  ```
+
+- 含义：
+  - 构建前端（docker build/compose）与后端（BuildKit/daemon）之间的 gRPC 通道被中断（EOF），导致“未能接收构建状态”。这类错误通常与 Docker Desktop/BuildKit 的进程重启、缓存/磁盘 I/O 异常或资源耗尽相关，并非 Python 代码错误。
+
+- 常见触发原因：
+  1) Docker Desktop 或 buildkitd 进程在构建期间崩溃/重启
+  2) 磁盘空间不足或虚拟磁盘/缓存写入异常（与上文 I/O 错误一致）
+  3) 资源耗尽（内存/CPU 竞争）被系统回收，连接被断开
+  4) WSL2/虚拟网络抖动导致 gRPC 连接中断
+
+- 排查与缓解：
+  1) 打开 Docker Desktop → Troubleshoot → 查看日志，搜索“buildkitd”“EOF”“rpc error: Unavailable”
+  2) 清理与重建缓存：
+     ```powershell
+     docker system prune -af
+     docker builder prune -af
+     ```
+  3) 重启 Docker Desktop（必要时重启电脑）
+  4) 暂时禁用 BuildKit 验证是否为 BuildKit 侧问题：
+     ```powershell
+     $env:DOCKER_BUILDKIT=0
+     docker compose build --no-cache --progress=plain
+     ```
+  5) 检查并扩大 Docker 磁盘/内存配额，确认宿主机磁盘空间充足
+  6) 如使用 WSL2：`wsl --shutdown` 后重启 Docker Desktop；必要时重置 WSL 网络
