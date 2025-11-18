@@ -1,176 +1,60 @@
-# GitHub Actions Workflows
+# GitHub Actions 工作流配置说明
 
-This directory contains the GitHub Actions workflows for the NOFX project.
+## 每日 Telegram 群组摘要工作流
 
-## 📚 Documentation Index
+此工作流每天自动运行 `fetch_tg_ai.py` 脚本，抓取 Telegram 群组消息并生成 AI 摘要。
 
-- **[README.md](./README.md)** - This file, overview of all workflows
-- **[PERMISSIONS.md](./PERMISSIONS.md)** - Detailed permission analysis and security model
-- **[TRIGGERS.md](./TRIGGERS.md)** - Comparison of event triggers (pull_request vs pull_request_target vs workflow_run)
-- **[FORK_PR_FLOW.md](./FORK_PR_FLOW.md)** - Complete analysis of what happens when a fork PR is submitted
-- **[FLOW_DIAGRAM.md](./FLOW_DIAGRAM.md)** - Visual flow diagrams and quick reference
-- **[SECRETS_SCANNING.md](./SECRETS_SCANNING.md)** - Secrets scanning solutions and TruffleHog setup
+### 配置步骤
 
-## 🚀 Quick Start
+#### 1. 设置 GitHub Secrets
 
-**Want to understand how fork PRs work?** → Read [FLOW_DIAGRAM.md](./FLOW_DIAGRAM.md)
+在 GitHub 仓库的 Settings → Secrets and variables → Actions 中添加以下 secrets：
 
-**Need security details?** → Read [PERMISSIONS.md](./PERMISSIONS.md)
+**必需配置：**
+- `TELEGRAM_API_ID`: Telegram API ID（从 https://my.telegram.org/apps 获取）
+- `TELEGRAM_API_HASH`: Telegram API Hash
+- `DEEPSEEK_API_KEY`: DeepSeek API 密钥
+- `TELEGRAM_SESSION`: Telegram session 文件的 base64 编码内容
+  - 在本地运行一次脚本生成 session 文件后，使用以下命令编码：
+    ```bash
+    base64 telegram插件/telegram_session.session
+    ```
+  - 将输出的 base64 字符串保存为 secret
+- `TELEGRAM_BOT_TOKEN`: Telegram Bot Token（用于发送通知）
+  - 向 [@BotFather](https://t.me/botfather) 创建 bot 并获取 token
+- `TELEGRAM_CHAT_ID`: 接收通知的 Telegram Chat ID（你的用户 ID 或群组 ID）
+  - 向 [@userinfobot](https://t.me/userinfobot) 发送消息获取你的 Chat ID
 
-**Confused about triggers?** → Read [TRIGGERS.md](./TRIGGERS.md)
+**可选配置：**
+- `TELEGRAM_CHAT`: 要抓取的群组名称（默认：`nofx_dev_community`）
+- `TELEGRAM_LIMIT`: 抓取消息数量限制（默认：`2000`）
 
-## PR Check Workflows
+#### 2. 调整运行时间
 
-We use a **two-workflow pattern** to safely handle PR checks from both internal and fork PRs:
+默认设置为每天 UTC 23:00（中国时间早上 7:00）。如需修改，编辑 `.github/workflows/daily-telegram-summary.yml` 中的 cron 表达式：
 
-### 1. `pr-checks-run.yml` - Execute Checks
-
-**Trigger:** On pull request (opened, synchronize, reopened)
-
-**Permissions:** Read-only
-
-**Purpose:** Executes all PR checks with read-only permissions, making it safe for fork PRs.
-
-**What it does:**
-- ✅ Checks PR title format (Conventional Commits)
-- ✅ Calculates PR size
-- ✅ Runs backend checks (Go formatting, vet, tests)
-- ✅ Runs frontend checks (linting, type checking, build)
-- ✅ Saves all results as artifacts
-
-**Security:** Safe for fork PRs because it only has read permissions and cannot access secrets or modify the repository.
-
-### 2. `pr-checks-comment.yml` - Post Results
-
-**Trigger:** When `pr-checks-run.yml` completes (workflow_run)
-
-**Permissions:** Write (pull-requests, issues)
-
-**Purpose:** Posts check results as PR comments, running in the main repository context.
-
-**What it does:**
-- ✅ Downloads artifacts from `pr-checks-run.yml`
-- ✅ Reads check results
-- ✅ Posts a comprehensive comment to the PR
-
-**Security:** Safe because:
-- Runs in the main repository context (not fork context)
-- Has write permissions but doesn't execute untrusted code
-- Only reads pre-generated results from artifacts
-
-### 3. `pr-checks.yml` - Strict Checks
-
-**Trigger:** On pull request
-
-**Permissions:** Read + conditional write
-
-**Purpose:** Runs mandatory checks that must pass before PR can be merged.
-
-**What it does:**
-- ✅ Validates PR title (blocks merge if invalid)
-- ✅ Auto-labels PR based on size and files changed (non-fork only)
-- ✅ Runs backend tests (Go)
-- ✅ Runs frontend tests (React/TypeScript)
-- ✅ Security scanning (Trivy, Gitleaks)
-
-**Security:**
-- Fork PRs: Only runs read-only operations (tests, security scans)
-- Non-fork PRs: Can add labels and comments
-- Uses `continue-on-error` for operations that may fail on forks
-
-## Why Two Workflows for PR Checks?
-
-### The Problem
-
-When a PR comes from a forked repository:
-- GitHub restricts `GITHUB_TOKEN` permissions for security
-- Fork PRs cannot write comments, add labels, or access secrets
-- This prevents malicious contributors from:
-  - Stealing repository secrets
-  - Modifying workflow files to execute malicious code
-  - Spamming issues/PRs with automated comments
-
-### The Solution
-
-**Two-Workflow Pattern:**
-
-```
-Fork PR Submitted
-       ↓
-[pr-checks-run.yml]
-  - Runs with read-only permissions
-  - Executes all checks safely
-  - Saves results to artifacts
-       ↓
-[pr-checks-comment.yml]
-  - Triggered by workflow_run
-  - Runs in main repo context (has write permissions)
-  - Downloads artifacts
-  - Posts comment with results
+```yaml
+schedule:
+  - cron: '0 23 * * *'  # 分钟 小时 日 月 星期
 ```
 
-This approach:
-- ✅ Allows fork PRs to run checks
-- ✅ Safely posts results as comments
-- ✅ Prevents security vulnerabilities
-- ✅ Follows GitHub's best practices
+**时区说明：**
+- GitHub Actions 使用 UTC 时间
+- 中国时间（UTC+8）早上 7:00 = UTC 23:00（前一天）
+- 例如：要在中国时间早上 7:00 运行，使用 `'0 23 * * *'`
 
-### Can workflow_run Comment on Fork PRs?
+#### 3. 手动触发
 
-**Yes! ✅ The permissions are sufficient.**
+工作流支持手动触发，在 GitHub Actions 页面点击 "Run workflow" 即可。
 
-**Key Understanding:**
-- `workflow_run` executes in the **base repository** context
-- Fork PRs exist in the **base repository** (not in the fork)
-- The base repository's `GITHUB_TOKEN` has write permissions
-- Therefore, `workflow_run` can comment on fork PRs
+### 输出文件
 
-**Security:**
-- Fork PR code runs in isolated environment (read-only)
-- Comment workflow doesn't execute fork code
-- Only reads pre-generated artifact data
+工作流运行后会：
+1. 生成摘要文件并上传为 Artifact
+2. 发送 Telegram 通知（包含摘要预览）
 
-**For detailed permission analysis, see:** [PERMISSIONS.md](./PERMISSIONS.md)
+### 故障排查
 
-## Workflow Comparison
-
-| Workflow | Fork PRs | Write Access | Blocks Merge | Purpose |
-|----------|----------|--------------|--------------|---------|
-| `pr-checks-run.yml` | ✅ Yes | ❌ No | ❌ No | Advisory checks |
-| `pr-checks-comment.yml` | ✅ Yes | ✅ Yes* | ❌ No | Post results |
-| `pr-checks.yml` | ✅ Yes | ⚠️ Partial | ✅ Yes | Mandatory checks |
-
-\* Write access only in main repo context, not available to fork PR code
-
-## File History
-
-- `pr-checks-advisory.yml.old` - Old advisory workflow that failed on fork PRs (deprecated)
-- Now replaced by the two-workflow pattern (`pr-checks-run.yml` + `pr-checks-comment.yml`)
-
-## Testing the Workflows
-
-### Test with a Fork PR
-
-1. Fork the repository
-2. Make changes in your fork
-3. Create a PR to the main repository
-4. Observe:
-   - `pr-checks-run.yml` runs successfully with read-only access
-   - `pr-checks-comment.yml` posts results as a comment
-   - `pr-checks.yml` runs tests but skips labeling
-
-### Test with a Branch PR
-
-1. Create a branch in the main repository
-2. Make changes
-3. Create a PR
-4. Observe:
-   - All workflows run with full permissions
-   - Labels are added automatically
-   - Comments are posted
-
-## References
-
-- [GitHub Actions: Keeping your GitHub Actions and workflows secure Part 1](https://securitylab.github.com/research/github-actions-preventing-pwn-requests/)
-- [Safely posting comments from untrusted workflows](https://securitylab.github.com/research/github-actions-building-blocks/)
-- [GitHub Actions: workflow_run trigger](https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#workflow_run)
+- **Session 文件问题**：确保 `TELEGRAM_SESSION` secret 包含完整的 base64 编码 session 文件
+- **权限问题**：确保 Telegram 账号有权限访问目标群组
+- **API 限制**：如果遇到 FloodWait 错误，工作流会自动重试
