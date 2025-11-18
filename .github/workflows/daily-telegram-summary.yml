@@ -74,16 +74,14 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # 构建通知消息
           if [ "${{ job.status }}" == "success" ]; then
             STATUS_EMOJI="✅"
             STATUS_TEXT="成功"
-            # 读取最新的摘要文件
             LATEST_SUMMARY=$(ls -t telegram插件/output/summary_*.txt 2>/dev/null | head -1)
             if [ -n "$LATEST_SUMMARY" ]; then
-              # 获取摘要的前800字符作为预览（避免消息过长）
               SUMMARY_PREVIEW=$(head -c 800 "$LATEST_SUMMARY" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed 's/`/\\`/g' | sed 's/*/\\*/g' | sed 's/_/\\_/g' | sed 's/\[/\\[/g' | sed 's/\]/\\]/g')
-              MESSAGE="*每日 Telegram 群组摘要*
+              MESSAGE=$(cat <<'EOF'
+*每日 Telegram 群组摘要*
 
 ${STATUS_EMOJI} 状态: ${STATUS_TEXT}
 
@@ -93,51 +91,40 @@ ${SUMMARY_PREVIEW}...
 \`\`\`
 
 📊 完整摘要已上传到 GitHub Actions Artifacts
-🔗 查看: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+🔗 查看: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+EOF
+)
             else
-              MESSAGE="*每日 Telegram 群组摘要*
-
-${STATUS_EMOJI} 状态: ${STATUS_TEXT}
-
-⚠️ 未找到摘要文件"
+              MESSAGE="*每日 Telegram 群组摘要*\n\n${STATUS_EMOJI} 状态: ${STATUS_TEXT}\n\n⚠️ 未找到摘要文件"
             fi
           else
             STATUS_EMOJI="❌"
             STATUS_TEXT="失败"
-            MESSAGE="*每日 Telegram 群组摘要*
-
-${STATUS_EMOJI} 状态: ${STATUS_TEXT}
-
-请查看 GitHub Actions 日志获取详细信息
-🔗 查看: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            MESSAGE="*每日 Telegram 群组摘要*\n\n${STATUS_EMOJI} 状态: ${STATUS_TEXT}\n\n请查看 GitHub Actions 日志获取详细信息\n🔗 查看: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           fi
-          
-          # 发送通知到 Telegram
+
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-            # 使用 Python 发送消息，避免 shell 转义问题
-            python3 << EOF
+            python3 <<'PYEOF'
 import os
 import requests
-import json
 
 bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
 chat_id = os.getenv('TELEGRAM_CHAT_ID')
-message = """$MESSAGE"""
+message = os.getenv('MESSAGE')
 
 url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 payload = {
     "chat_id": chat_id,
     "text": message,
     "parse_mode": "Markdown",
-    "disable_web_page_preview": True
+    "disable_web_page_preview": True,
 }
-
 response = requests.post(url, json=payload)
 if response.status_code == 200:
     print("✅ Telegram 通知发送成功")
 else:
     print(f"⚠️ 发送失败: {response.status_code} - {response.text}")
-EOF
+PYEOF
           else
             echo "⚠️ 未配置 Telegram Bot Token 或 Chat ID，跳过通知"
           fi
