@@ -1,4 +1,4 @@
-' python fetch_tg_ai.py --chat nofx_dev_community --limit 2000'
+' python telegram_fetch/fetch_tg_ai.py --chat nofx_dev_community --limit 2000 --past-hours 180'
 
 
 import argparse
@@ -28,17 +28,17 @@ DEFAULT_PROMPT = (
     "你是一位资深技术分析助手。请从以下 Telegram 群组聊天内容中提取对项目优化最有价值的重要信息，"
     "避免无关闲聊。请按以下格式输出：\n"
     "- 总览：概述今天的关键变化、主要模块或分支、潜在收益与风险、优先处理事项。新版prompt，新方法增加收益率，新思路（比如说增加新的技术指标，或者新的交易策略）\n"
-    "- 事件清单：逐条列出过去24小时的重要事件（含Bug、功能、配置、部署、策略、性能问题等），"
+    "- 事件清单：逐条列出过去{past_hours}小时的重要事件（含Bug、功能、配置、部署、策略、性能问题等），"
     "每条说明事件标题、类型、时间、参与者、影响组件、环境、复现步骤、错误或日志要点、配置变更、"
     "代码或链接参考、指标与证据、当前结论、状态与下一步行动。\n"
-    "- 行动计划：列出8个最优先执行的任务，说明目标、负责人、环境、验收标准与预期时间。\n"
+    "- 行动计划：列出15个最优先执行的任务，说明目标、负责人、环境、验收标准与预期时间。\n"
     "事件清单（按影响力由高到低排序；每个事件都要尽可能完整）】 对每个事件，使用如下模板分段输出： 1) 标题（一句话，含模块/版本/分支） 2) 类型：bug / feature / config / ops / strategy / decision / notice 3) 发生时间：具体时间或“约在HH:MM”（若不明写“未知”） 4) 参与者：@用户名 或 sender_id（若多名，列出关键干系人） 5) 受影响组件：文件/接口/模块/路由（尽量具体，如 server.go:/equity-history） 6) 环境：dev / main / binance / paper / prod（可多选） 7) 复现步骤：用step1/step2…给出可操作步骤（本地/测试网/生产分别说明） 8) 错误/日志要点：贴出原文关键句（20–140字），不要意译 9) 配置变化：.env或参数/开关的 before→after（如 admin_mode、API Key 范围、风控阈值） 10) 代码/链接参考：PR/commit/issue/文档路径或URL（若无写“无”） 11) 指标与证据：盈利/回撤/胜率/延迟/吞吐等；给出数值或“未知” 12) 风险评估：影响半径、是否可复现、是否牵涉资金或合规 13) 当前结论：群里形成的共识或主流判断（若分歧，写出分歧点） 14) 状态：open / fixed / workaround / investigating 15) 下一步：列出明确动作清单（含责任人与期望完成时间/里程碑） 16) 关键引用：至少2条消息的简短原文摘录，格式为 - #message_id @author YYYY-MM-DD HH:MM | 关键原句 - 可附链接（若有）"
     "- 风险与阻断：指出当前最大风险、限制与可能的替代方案。\n"
     "- 开放问题：列出待验证或需追问的关键问题及验证方式。\n"
     "- 变更与回归检查：说明今日涉及的配置、依赖或分支变动，并给出需要执行的回归测试与对照检查。"
 )
 
-DEFAULT_LIMIT = 500
+DEFAULT_LIMIT = 1000
 SESSION_NAME = "telegram_session"
 OUTPUT_DIR = "output"
 RAW_FILENAME_TEMPLATE = "telegram_raw_{date}.jsonl"
@@ -67,7 +67,7 @@ class ChatMetadata:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Fetch past 24h Telegram messages from a single chat and summarise with DeepSeek."
+        description="Fetch past Telegram messages from a single chat and summarise with DeepSeek."
     )
     parser.add_argument("--chat", required=True, help="目标群组的用户名或聊天 ID（例如 @group_name）")
     parser.add_argument(
@@ -75,6 +75,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_LIMIT,
         help=f"最多抓取的消息条数（默认 {DEFAULT_LIMIT}）",
+    )
+    parser.add_argument(
+        "--past-hours",
+        type=int,
+        default=PAST_HOURS,
+        help=f"获取过去多少小时的消息（默认 {PAST_HOURS}，一周为 168）",
     )
     parser.add_argument(
         "--prompt",
@@ -130,8 +136,9 @@ async def fetch_recent_messages(
     client: TelegramClient,
     chat: str,
     limit: int,
+    past_hours: int,
 ) -> List[Message]:
-    since = datetime.now(timezone.utc) - timedelta(hours=PAST_HOURS)
+    since = datetime.now(timezone.utc) - timedelta(hours=past_hours)
     until = datetime.now(timezone.utc)
 
     last_error: Optional[Exception] = None
@@ -196,7 +203,7 @@ def message_to_record(message: Message) -> dict:
     }
 
 
-def build_summary_prompt(base_prompt: str, records: List[dict]) -> str:
+def build_summary_prompt(base_prompt: str, records: List[dict], past_hours: int) -> str:
     lines = []
     for record in records:
         timestamp = record["date"]
@@ -206,7 +213,8 @@ def build_summary_prompt(base_prompt: str, records: List[dict]) -> str:
             continue
         lines.append(f"[{timestamp}] {sender}: {text}")
 
-    message_log = "\n".join(lines) if lines else "（过去24小时无文本消息）"
+    time_desc = f"过去{past_hours}小时" if past_hours < 24 else f"过去{past_hours // 24}天" if past_hours % 24 == 0 else f"过去{past_hours}小时"
+    message_log = "\n".join(lines) if lines else f"（{time_desc}无文本消息）"
     return f"{base_prompt.strip()}\n\n以下是群聊内容：\n{message_log}"
 
 
@@ -263,11 +271,12 @@ def write_jsonl(path: str, records: List[dict]) -> None:
             handle.write("\n")
 
 
-def write_summary_file(path: str, chat: ChatMetadata, summary: str, date_label: str) -> None:
+def write_summary_file(path: str, chat: ChatMetadata, summary: str, date_label: str, past_hours: int) -> None:
+    time_desc = f"过去{past_hours}小时" if past_hours < 24 else f"过去{past_hours // 24}天" if past_hours % 24 == 0 else f"过去{past_hours}小时"
     header = (
-        "=== Telegram 群组每日摘要 ===\n"
+        "=== Telegram 群组摘要 ===\n"
         f"群组: {chat.identifier}\n"
-        f"时间: {date_label} (过去24小时)\n\n"
+        f"时间: {date_label} ({time_desc})\n\n"
         "【AI 总结】\n"
     )
     with open(path, "w", encoding="utf-8") as handle:
@@ -282,13 +291,16 @@ async def async_main() -> None:
 
     if args.limit <= 0:
         raise SystemExit("--limit 必须为正整数。")
+    
+    if args.past_hours <= 0:
+        raise SystemExit("--past-hours 必须为正整数。")
 
     ensure_output_dir(OUTPUT_DIR)
 
     async with TelegramClient(SESSION_NAME, API_ID, API_HASH) as client:
         chat_meta = await resolve_chat_metadata(client, args.chat)
-        logging.info("成功连接到 Telegram，开始抓取 %s 的消息。", chat_meta.display_name)
-        messages = await fetch_recent_messages(client, args.chat, args.limit)
+        logging.info("成功连接到 Telegram，开始抓取 %s 的消息（过去 %s 小时）。", chat_meta.display_name, args.past_hours)
+        messages = await fetch_recent_messages(client, args.chat, args.limit, args.past_hours)
 
     records = [message_to_record(message) for message in messages]
     utc_now = datetime.now(timezone.utc)
@@ -299,15 +311,16 @@ async def async_main() -> None:
     write_jsonl(raw_path, records)
 
     prompt_text = args.prompt if args.prompt else DEFAULT_PROMPT
-    full_prompt = build_summary_prompt(prompt_text, records)
+    full_prompt = build_summary_prompt(prompt_text, records, args.past_hours)
 
     if records:
         summary_text = await generate_summary(full_prompt)
     else:
-        summary_text = "过去24小时未检测到可总结的文本消息。"
+        time_desc = f"过去{args.past_hours}小时" if args.past_hours < 24 else f"过去{args.past_hours // 24}天" if args.past_hours % 24 == 0 else f"过去{args.past_hours}小时"
+        summary_text = f"{time_desc}未检测到可总结的文本消息。"
 
     summary_path = os.path.join(OUTPUT_DIR, SUMMARY_FILENAME_TEMPLATE.format(date=date_stamp))
-    write_summary_file(summary_path, chat_meta, summary_text, date_label)
+    write_summary_file(summary_path, chat_meta, summary_text, date_label, args.past_hours)
 
     print(f"抓取消息：{len(records)} 条")
     print(f"原始数据已保存：{raw_path}")
