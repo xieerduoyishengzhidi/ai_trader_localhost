@@ -353,6 +353,10 @@ func (t *FuturesTrader) CloseLong(symbol string, quantity float64) (map[string]i
 		log.Printf("  ⚠ 取消挂单失败: %v", err)
 	}
 
+	// ⚠️ 关键修复：清除仓位缓存，确保下次 GetPositions 时获取最新数据
+	// 避免缓存导致系统认为还有仓位，从而继续将该币种留在候选列表中
+	t.clearPositionsCache()
+
 	result := make(map[string]interface{})
 	result["orderId"] = order.OrderID
 	result["symbol"] = order.Symbol
@@ -407,11 +411,24 @@ func (t *FuturesTrader) CloseShort(symbol string, quantity float64) (map[string]
 		log.Printf("  ⚠ 取消挂单失败: %v", err)
 	}
 
+	// ⚠️ 关键修复：清除仓位缓存，确保下次 GetPositions 时获取最新数据
+	// 避免缓存导致系统认为还有仓位，从而继续将该币种留在候选列表中
+	t.clearPositionsCache()
+
 	result := make(map[string]interface{})
 	result["orderId"] = order.OrderID
 	result["symbol"] = order.Symbol
 	result["status"] = order.Status
 	return result, nil
+}
+
+// clearPositionsCache 清除仓位缓存（平仓后调用，确保下次获取最新数据）
+func (t *FuturesTrader) clearPositionsCache() {
+	t.positionsCacheMutex.Lock()
+	t.cachedPositions = nil
+	t.positionsCacheTime = time.Time{} // 设置为零值，强制下次重新获取
+	t.positionsCacheMutex.Unlock()
+	log.Printf("  🔄 已清除仓位缓存，下次将获取最新数据")
 }
 
 // CancelAllOrders 取消该币种的所有挂单

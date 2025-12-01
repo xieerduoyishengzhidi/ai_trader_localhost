@@ -17,83 +17,83 @@ import (
 
 // calculateFibonacciLevels 计算斐波那契回撤水平
 func calculateFibonacciLevels(high, low float64) *FibLevels {
-    diff := high - low
-    return &FibLevels{
-        Level236: high - (diff * 0.236),
-        Level382: high - (diff * 0.382),
-        Level500: high - (diff * 0.5),
-        Level618: high - (diff * 0.618),
-        Level705: high - (diff * 0.705),
-        Level786: high - (diff * 0.786),
-        High:     high,
-        Low:      low,
-        Trend:    "bullish", // 默认，实际使用时需要根据趋势判断
-    }
+	diff := high - low
+	return &FibLevels{
+		Level236: high - (diff * 0.236),
+		Level382: high - (diff * 0.382),
+		Level500: high - (diff * 0.5),
+		Level618: high - (diff * 0.618),
+		Level705: high - (diff * 0.705),
+		Level786: high - (diff * 0.786),
+		High:     high,
+		Low:      low,
+		Trend:    "bullish", // 默认，实际使用时需要根据趋势判断
+	}
 }
 
 // detectMarketStructure 检测市场结构
 func detectMarketStructure(priceSeries []float64) *MarketStructure {
-    if len(priceSeries) < 10 {
-        return nil
-    }
+	if len(priceSeries) < 10 {
+		return nil
+	}
 
-    structure := &MarketStructure{
-        SwingHighs: make([]float64, 0),
-        SwingLows:  make([]float64, 0),
-    }
+	structure := &MarketStructure{
+		SwingHighs: make([]float64, 0),
+		SwingLows:  make([]float64, 0),
+	}
 
-    // 简单的波段检测算法
-    for i := 2; i < len(priceSeries)-2; i++ {
-        // 检测波段高点
-        if priceSeries[i] > priceSeries[i-1] && priceSeries[i] > priceSeries[i-2] &&
-           priceSeries[i] > priceSeries[i+1] && priceSeries[i] > priceSeries[i+2] {
-            structure.SwingHighs = append(structure.SwingHighs, priceSeries[i])
-        }
-        // 检测波段低点
-        if priceSeries[i] < priceSeries[i-1] && priceSeries[i] < priceSeries[i-2] &&
-           priceSeries[i] < priceSeries[i+1] && priceSeries[i] < priceSeries[i+2] {
-            structure.SwingLows = append(structure.SwingLows, priceSeries[i])
-        }
-    }
+	// 简单的波段检测算法
+	for i := 2; i < len(priceSeries)-2; i++ {
+		// 检测波段高点
+		if priceSeries[i] > priceSeries[i-1] && priceSeries[i] > priceSeries[i-2] &&
+			priceSeries[i] > priceSeries[i+1] && priceSeries[i] > priceSeries[i+2] {
+			structure.SwingHighs = append(structure.SwingHighs, priceSeries[i])
+		}
+		// 检测波段低点
+		if priceSeries[i] < priceSeries[i-1] && priceSeries[i] < priceSeries[i-2] &&
+			priceSeries[i] < priceSeries[i+1] && priceSeries[i] < priceSeries[i+2] {
+			structure.SwingLows = append(structure.SwingLows, priceSeries[i])
+		}
+	}
 
-    // 确定当前偏向
-    if len(structure.SwingHighs) > 1 && len(structure.SwingLows) > 1 {
-        latestHigh := structure.SwingHighs[len(structure.SwingHighs)-1]
-        prevHigh := structure.SwingHighs[len(structure.SwingHighs)-2]
-        latestLow := structure.SwingLows[len(structure.SwingLows)-1]
-        prevLow := structure.SwingLows[len(structure.SwingLows)-2]
+	// 确定当前偏向
+	if len(structure.SwingHighs) > 1 && len(structure.SwingLows) > 1 {
+		latestHigh := structure.SwingHighs[len(structure.SwingHighs)-1]
+		prevHigh := structure.SwingHighs[len(structure.SwingHighs)-2]
+		latestLow := structure.SwingLows[len(structure.SwingLows)-1]
+		prevLow := structure.SwingLows[len(structure.SwingLows)-2]
 
-        if latestHigh > prevHigh && latestLow > prevLow {
-            structure.CurrentBias = "bullish"
-        } else if latestHigh < prevHigh && latestLow < prevLow {
-            structure.CurrentBias = "bearish"
-        } else {
-            structure.CurrentBias = "neutral"
-        }
-    }
+		if latestHigh > prevHigh && latestLow > prevLow {
+			structure.CurrentBias = "bullish"
+		} else if latestHigh < prevHigh && latestLow < prevLow {
+			structure.CurrentBias = "bearish"
+		} else {
+			structure.CurrentBias = "neutral"
+		}
+	}
 
-    return structure
+	return structure
 }
 
 // calculateCurrentFibLevels 计算当前斐波那契水平
 func calculateCurrentFibLevels(structure *MarketStructure) *FibLevels {
-    if structure == nil || len(structure.SwingHighs) < 2 || len(structure.SwingLows) < 2 {
-        return nil
-    }
+	if structure == nil || len(structure.SwingHighs) < 2 || len(structure.SwingLows) < 2 {
+		return nil
+	}
 
-    // 使用最近的波段高点和低点
-    recentHigh := structure.SwingHighs[len(structure.SwingHighs)-1]
-    recentLow := structure.SwingLows[len(structure.SwingLows)-1]
+	// 使用最近的波段高点和低点
+	recentHigh := structure.SwingHighs[len(structure.SwingHighs)-1]
+	recentLow := structure.SwingLows[len(structure.SwingLows)-1]
 
-    // 确保高点高于低点
-    if recentHigh <= recentLow {
-        return nil
-    }
+	// 确保高点高于低点
+	if recentHigh <= recentLow {
+		return nil
+	}
 
-    fibLevels := calculateFibonacciLevels(recentHigh, recentLow)
-    fibLevels.Trend = structure.CurrentBias
-    
-    return fibLevels
+	fibLevels := calculateFibonacciLevels(recentHigh, recentLow)
+	fibLevels.Trend = structure.CurrentBias
+
+	return fibLevels
 }
 
 // ==================== 震荡市检测相关结构 ====================
@@ -353,7 +353,7 @@ func Get(symbol string) (*Data, error) {
 	// 计算市场结构和斐波那契水平（使用日线数据）
 	var marketStructure *MarketStructure
 	var fibLevels *FibLevels
-	
+
 	if multiTimeframe.Timeframe1d != nil {
 		marketStructure = detectMarketStructure(multiTimeframe.Timeframe1d.PriceSeries)
 		if marketStructure != nil {
@@ -361,21 +361,28 @@ func Get(symbol string) (*Data, error) {
 		}
 	}
 
+	// 新增：汇总形态识别结果
+	patternRecognition := aggregatePatterns(multiTimeframe)
+	if patternRecognition != nil {
+		patternRecognition.Symbol = symbol
+	}
+
 	return &Data{
-		Symbol:            symbol,
-		CurrentPrice:      primaryData.CurrentPrice,
-		PriceChange1h:     priceChange1h,
-		PriceChange4h:     priceChange4h,
-		PriceChange1d:     priceChange1d, // 新增：日线价格变化
-		CurrentEMA20:      primaryData.EMA20,
-		CurrentMACD:       primaryData.MACD,
-		CurrentRSI7:       primaryData.RSI7,
-		OpenInterest:      oiData,
-		FundingRate:       fundingRate,
-		MultiTimeframe:    multiTimeframe,
-		LongerTermContext: longerTermData,
-		MarketStructure:   marketStructure, // 新增
-		FibLevels:         fibLevels,       // 新增
+		Symbol:             symbol,
+		CurrentPrice:       primaryData.CurrentPrice,
+		PriceChange1h:      priceChange1h,
+		PriceChange4h:      priceChange4h,
+		PriceChange1d:      priceChange1d, // 新增：日线价格变化
+		CurrentEMA20:       primaryData.EMA20,
+		CurrentMACD:        primaryData.MACD,
+		CurrentRSI7:        primaryData.RSI7,
+		OpenInterest:       oiData,
+		FundingRate:        fundingRate,
+		MultiTimeframe:     multiTimeframe,
+		LongerTermContext:  longerTermData,
+		MarketStructure:    marketStructure,    // 新增
+		FibLevels:          fibLevels,          // 新增
+		PatternRecognition: patternRecognition, // 新增：形态识别汇总
 	}, nil
 }
 
@@ -421,7 +428,7 @@ func calculateTimeframeData(klines []Kline, timeframe string) *TimeframeData {
 	}
 
 	currentPrice := klines[len(klines)-1].Close
-	
+
 	// 提取价格序列
 	priceSeries := make([]float64, len(klines))
 	for i, k := range klines {
@@ -435,7 +442,7 @@ func calculateTimeframeData(klines []Kline, timeframe string) *TimeframeData {
 	rsi7 := calculateRSIFromSeries(priceSeries, 7)
 	rsi14 := calculateRSIFromSeries(priceSeries, 14)
 	atr14 := calculateATRFromKlines(klines, 14)
-	
+
 	volume := 0.0
 	if len(klines) > 0 {
 		volume = klines[len(klines)-1].Volume
@@ -443,9 +450,12 @@ func calculateTimeframeData(klines []Kline, timeframe string) *TimeframeData {
 
 	// 判断趋势方向
 	trendDirection := determineTrendDirection(currentPrice, ema20, ema50, macd)
-	
+
 	// 计算信号强度
 	signalStrength := calculateTimeframeSignalStrength(currentPrice, ema20, ema50, macd, rsi7)
+
+	// 新增：形态识别
+	patterns := detectCandlestickPatterns(klines, timeframe)
 
 	return &TimeframeData{
 		Timeframe:      timeframe,
@@ -460,6 +470,7 @@ func calculateTimeframeData(klines []Kline, timeframe string) *TimeframeData {
 		PriceSeries:    priceSeries,
 		TrendDirection: trendDirection,
 		SignalStrength: signalStrength,
+		Patterns:       patterns, // 新增：形态识别结果
 	}
 }
 
@@ -729,7 +740,7 @@ func getKlines(symbol, interval string, limit int) ([]Kline, error) {
 			OpenTime:  openTime,
 			Open:      open,
 			High:      high,
-			Low:      low,
+			Low:       low,
 			Close:     close,
 			Volume:    volume,
 			CloseTime: closeTime,
@@ -758,77 +769,77 @@ func Format(data *Data) string {
 	}
 
 	var sb strings.Builder
-	
+
 	// 基础价格信息
-	sb.WriteString(fmt.Sprintf("💰 当前价格: %.4f | 1h: %+.2f%% | 4h: %+.2f%% | 1d: %+.2f%%\n", 
+	sb.WriteString(fmt.Sprintf("💰 当前价格: %.4f | 1h: %+.2f%% | 4h: %+.2f%% | 1d: %+.2f%%\n",
 		data.CurrentPrice, data.PriceChange1h, data.PriceChange4h, data.PriceChange1d))
-	
+
 	// 技术指标
-	sb.WriteString(fmt.Sprintf("📊 EMA20: %.4f | MACD: %.4f | RSI7: %.1f\n", 
+	sb.WriteString(fmt.Sprintf("📊 EMA20: %.4f | MACD: %.4f | RSI7: %.1f\n",
 		data.CurrentEMA20, data.CurrentMACD, data.CurrentRSI7))
-	
+
 	// 多时间框架分析
 	if data.MultiTimeframe != nil {
 		sb.WriteString("⏰ 多时间框架:\n")
-		
+
 		// 15分钟框架
 		if tf15 := data.MultiTimeframe.Timeframe15m; tf15 != nil {
-			sb.WriteString(fmt.Sprintf("   • 15m: %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n", 
+			sb.WriteString(fmt.Sprintf("   • 15m: %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n",
 				tf15.TrendDirection, tf15.SignalStrength, tf15.EMA20, tf15.MACD, tf15.RSI7))
 		}
-		
+
 		// 1小时框架
 		if tf1h := data.MultiTimeframe.Timeframe1h; tf1h != nil {
-			sb.WriteString(fmt.Sprintf("   • 1h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n", 
+			sb.WriteString(fmt.Sprintf("   • 1h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n",
 				tf1h.TrendDirection, tf1h.SignalStrength, tf1h.EMA20, tf1h.MACD, tf1h.RSI7))
 		}
-		
+
 		// 4小时框架
 		if tf4h := data.MultiTimeframe.Timeframe4h; tf4h != nil {
-			sb.WriteString(fmt.Sprintf("   • 4h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n", 
+			sb.WriteString(fmt.Sprintf("   • 4h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n",
 				tf4h.TrendDirection, tf4h.SignalStrength, tf4h.EMA20, tf4h.MACD, tf4h.RSI7))
 		}
-		
+
 		// 日线框架
 		if tf1d := data.MultiTimeframe.Timeframe1d; tf1d != nil {
-			sb.WriteString(fmt.Sprintf("   • 1d:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n", 
+			sb.WriteString(fmt.Sprintf("   • 1d:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n",
 				tf1d.TrendDirection, tf1d.SignalStrength, tf1d.EMA20, tf1d.MACD, tf1d.RSI7))
 		}
 	}
-	
+
 	// 资金数据
 	if data.OpenInterest != nil {
-		sb.WriteString(fmt.Sprintf("📈 持仓量: %.0f | 平均: %.0f\n", 
+		sb.WriteString(fmt.Sprintf("📈 持仓量: %.0f | 平均: %.0f\n",
 			data.OpenInterest.Latest, data.OpenInterest.Average))
 	}
-	
+
 	sb.WriteString(fmt.Sprintf("💸 资金费率: %.4f%%\n", data.FundingRate*100))
-	
+
 	// 长期数据
 	if data.LongerTermContext != nil {
 		sb.WriteString("📅 长期数据:\n")
-		sb.WriteString(fmt.Sprintf("   • EMA20: %.4f | EMA50: %.4f\n", 
+		sb.WriteString(fmt.Sprintf("   • EMA20: %.4f | EMA50: %.4f\n",
 			data.LongerTermContext.EMA20, data.LongerTermContext.EMA50))
-		sb.WriteString(fmt.Sprintf("   • ATR3: %.4f | ATR14: %.4f\n", 
+		sb.WriteString(fmt.Sprintf("   • ATR3: %.4f | ATR14: %.4f\n",
 			data.LongerTermContext.ATR3, data.LongerTermContext.ATR14))
-		sb.WriteString(fmt.Sprintf("   • 成交量: %.0f | 平均: %.0f\n", 
+		sb.WriteString(fmt.Sprintf("   • 成交量: %.0f | 平均: %.0f\n",
 			data.LongerTermContext.CurrentVolume, data.LongerTermContext.AverageVolume))
-		
+
 		// MACD序列
 		if len(data.LongerTermContext.MACDValues) > 0 {
-			sb.WriteString(fmt.Sprintf("   • MACD序列: %.4f → %.4f\n", 
-				data.LongerTermContext.MACDValues[0], 
+			sb.WriteString(fmt.Sprintf("   • MACD序列: %.4f → %.4f\n",
+				data.LongerTermContext.MACDValues[0],
 				data.LongerTermContext.MACDValues[len(data.LongerTermContext.MACDValues)-1]))
 		}
-		
+
 		// RSI序列
 		if len(data.LongerTermContext.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("   • RSI序列: %.1f → %.1f\n", 
-				data.LongerTermContext.RSI14Values[0], 
+			sb.WriteString(fmt.Sprintf("   • RSI序列: %.1f → %.1f\n",
+				data.LongerTermContext.RSI14Values[0],
 				data.LongerTermContext.RSI14Values[len(data.LongerTermContext.RSI14Values)-1]))
 		}
 	}
-	
+
 	// 价格序列分析
 	if data.MultiTimeframe != nil && data.MultiTimeframe.Timeframe15m != nil {
 		priceSeries := data.MultiTimeframe.Timeframe15m.PriceSeries
@@ -840,33 +851,33 @@ func Format(data *Data) string {
 
 	// ==================== 新增：市场状态显示 ====================
 	marketCondition := DetectMarketCondition(data)
-	sb.WriteString(fmt.Sprintf("🌊 市场状态: %s (置信度: %d%%)\n", 
+	sb.WriteString(fmt.Sprintf("🌊 市场状态: %s (置信度: %d%%)\n",
 		marketCondition.Condition, marketCondition.Confidence))
-	sb.WriteString(fmt.Sprintf("   • EMA斜率: %.4f%% | 价格通道: %.2f%% | ATR比率: %.2f%%\n", 
+	sb.WriteString(fmt.Sprintf("   • EMA斜率: %.4f%% | 价格通道: %.2f%% | ATR比率: %.2f%%\n",
 		marketCondition.EMASlope, marketCondition.PriceChannel, marketCondition.ATRRatio))
-	
+
 	// ==================== 新增：市场结构和斐波那契信息 ====================
 	if data.MarketStructure != nil {
 		sb.WriteString("🏗️ 市场结构:\n")
-		sb.WriteString(fmt.Sprintf("   • 偏向: %s | 波段高点: %d | 波段低点: %d\n", 
-			data.MarketStructure.CurrentBias, 
+		sb.WriteString(fmt.Sprintf("   • 偏向: %s | 波段高点: %d | 波段低点: %d\n",
+			data.MarketStructure.CurrentBias,
 			len(data.MarketStructure.SwingHighs),
 			len(data.MarketStructure.SwingLows)))
-		
+
 		if len(data.MarketStructure.SwingHighs) > 0 && len(data.MarketStructure.SwingLows) > 0 {
-			sb.WriteString(fmt.Sprintf("   • 最近波段: %.4f → %.4f\n", 
+			sb.WriteString(fmt.Sprintf("   • 最近波段: %.4f → %.4f\n",
 				data.MarketStructure.SwingHighs[len(data.MarketStructure.SwingHighs)-1],
 				data.MarketStructure.SwingLows[len(data.MarketStructure.SwingLows)-1]))
 		}
 	}
-	
+
 	if data.FibLevels != nil {
 		sb.WriteString("📐 斐波那契水平:\n")
-		sb.WriteString(fmt.Sprintf("   • 0.5中线: %.4f | 0.618: %.4f | 0.705: %.4f\n", 
+		sb.WriteString(fmt.Sprintf("   • 0.5中线: %.4f | 0.618: %.4f | 0.705: %.4f\n",
 			data.FibLevels.Level500, data.FibLevels.Level618, data.FibLevels.Level705))
-		sb.WriteString(fmt.Sprintf("   • OTE区间: %.4f - %.4f\n", 
+		sb.WriteString(fmt.Sprintf("   • OTE区间: %.4f - %.4f\n",
 			data.FibLevels.Level618, data.FibLevels.Level705))
-		
+
 		// 显示当前价格相对于斐波那契水平的位置
 		currentPrice := data.CurrentPrice
 		if currentPrice >= data.FibLevels.Level705 && currentPrice <= data.FibLevels.Level618 {
@@ -877,7 +888,7 @@ func Format(data *Data) string {
 			sb.WriteString("   🟢 当前价格在折扣区\n")
 		}
 	}
-	
+
 	// 震荡市警告
 	if marketCondition.Condition == "ranging" && marketCondition.Confidence > 60 {
 		sb.WriteString("🚨 **震荡市警告**: 避免开仓，耐心等待趋势突破！\n")
@@ -914,7 +925,7 @@ func parseFloat(v interface{}) (float64, error) {
 // GetMarketDataForSymbols 批量获取多个币种的市场数据
 func GetMarketDataForSymbols(symbols []string) map[string]*Data {
 	result := make(map[string]*Data)
-	
+
 	for _, symbol := range symbols {
 		data, err := Get(symbol)
 		if err != nil {
@@ -923,7 +934,7 @@ func GetMarketDataForSymbols(symbols []string) map[string]*Data {
 		}
 		result[symbol] = data
 	}
-	
+
 	return result
 }
 
@@ -932,9 +943,9 @@ func GetTrendSummary(data *Data) string {
 	if data == nil || data.MultiTimeframe == nil {
 		return "数据不足"
 	}
-	
+
 	var bullishCount, bearishCount, neutralCount int
-	
+
 	// 统计各时间框架趋势
 	timeframes := []*TimeframeData{
 		data.MultiTimeframe.Timeframe15m,
@@ -942,7 +953,7 @@ func GetTrendSummary(data *Data) string {
 		data.MultiTimeframe.Timeframe4h,
 		data.MultiTimeframe.Timeframe1d, // 新增：包含日线
 	}
-	
+
 	for _, tf := range timeframes {
 		if tf != nil {
 			switch tf.TrendDirection {
@@ -955,7 +966,7 @@ func GetTrendSummary(data *Data) string {
 			}
 		}
 	}
-	
+
 	// 判断总体趋势
 	if bullishCount >= 2 {
 		return "📈 多头趋势"
@@ -973,10 +984,10 @@ func GetSignalStrength(data *Data) int {
 	if data == nil || data.MultiTimeframe == nil {
 		return 0
 	}
-	
+
 	var totalStrength int
 	var count int
-	
+
 	// 计算各时间框架信号强度的平均值
 	timeframes := []*TimeframeData{
 		data.MultiTimeframe.Timeframe15m,
@@ -984,14 +995,14 @@ func GetSignalStrength(data *Data) int {
 		data.MultiTimeframe.Timeframe4h,
 		data.MultiTimeframe.Timeframe1d, // 新增：包含日线
 	}
-	
+
 	for _, tf := range timeframes {
 		if tf != nil {
 			totalStrength += tf.SignalStrength
 			count++
 		}
 	}
-	
+
 	if count > 0 {
 		return totalStrength / count
 	}
@@ -1002,9 +1013,99 @@ func GetSignalStrength(data *Data) int {
 func IsStrongSignal(data *Data) bool {
 	signalStrength := GetSignalStrength(data)
 	trendSummary := GetTrendSummary(data)
-	
+
 	// 强信号标准：信号强度>70且趋势明确
 	return signalStrength > 70 && (trendSummary == "📈 多头趋势" || trendSummary == "📉 空头趋势")
+}
+
+// GetSignalStrengthReason 获取信号强度不足的详细理由
+func GetSignalStrengthReason(data *Data) string {
+	if data == nil || data.MultiTimeframe == nil {
+		return "数据不足，无法计算信号强度"
+	}
+
+	signalStrength := GetSignalStrength(data)
+	trendSummary := GetTrendSummary(data)
+
+	var reasons []string
+
+	// 检查信号强度
+	if signalStrength <= 70 {
+		reasons = append(reasons, fmt.Sprintf("综合信号强度%d(要求>70)", signalStrength))
+	}
+
+	// 检查趋势明确性
+	if trendSummary != "📈 多头趋势" && trendSummary != "📉 空头趋势" {
+		reasons = append(reasons, fmt.Sprintf("趋势不明确(%s)", trendSummary))
+	}
+
+	// 详细分析各时间框架的信号强度
+	timeframes := []struct {
+		name string
+		tf   *TimeframeData
+	}{
+		{"15m", data.MultiTimeframe.Timeframe15m},
+		{"1h", data.MultiTimeframe.Timeframe1h},
+		{"4h", data.MultiTimeframe.Timeframe4h},
+		{"1d", data.MultiTimeframe.Timeframe1d},
+	}
+
+	var weakTimeframes []string
+	for _, tf := range timeframes {
+		if tf.tf != nil {
+			strength := tf.tf.SignalStrength
+			trend := tf.tf.TrendDirection
+
+			// 分析该时间框架信号强度不足的原因
+			var tfReasons []string
+
+			// 检查价格与EMA关系
+			price := tf.tf.CurrentPrice
+			ema20 := tf.tf.EMA20
+			ema50 := tf.tf.EMA50
+
+			if ema20 > 0 && ema50 > 0 {
+				if !(price > ema20 && ema20 > ema50) && !(price < ema20 && ema20 < ema50) {
+					tfReasons = append(tfReasons, "价格与EMA排列不明确")
+				}
+			}
+
+			// 检查MACD
+			macd := tf.tf.MACD
+			if macd >= -0.001 && macd <= 0.001 {
+				tfReasons = append(tfReasons, "MACD信号微弱")
+			}
+
+			// 检查RSI
+			rsi7 := tf.tf.RSI7
+			if rsi7 >= 30 && rsi7 <= 70 {
+				tfReasons = append(tfReasons, "RSI处于中性区间")
+			}
+
+			// 检查趋势方向
+			if trend == "neutral" {
+				tfReasons = append(tfReasons, "趋势方向不明确")
+			}
+
+			if strength < 60 {
+				reasonStr := fmt.Sprintf("%s强度%d", tf.name, strength)
+				if len(tfReasons) > 0 {
+					reasonStr += "(" + strings.Join(tfReasons, ",") + ")"
+				}
+				weakTimeframes = append(weakTimeframes, reasonStr)
+			}
+		}
+	}
+
+	if len(weakTimeframes) > 0 {
+		reasons = append(reasons, fmt.Sprintf("时间框架信号不足:%s", strings.Join(weakTimeframes, ";")))
+	}
+
+	if len(reasons) == 0 {
+		return fmt.Sprintf("信号强度%d，趋势%s", signalStrength, trendSummary)
+	}
+
+	return strings.Join(reasons, " | ")
 }
 
 // GetRiskLevel 获取风险等级
@@ -1012,10 +1113,10 @@ func GetRiskLevel(data *Data) string {
 	if data == nil {
 		return "未知"
 	}
-	
+
 	rsi := data.CurrentRSI7
 	macd := data.CurrentMACD
-	
+
 	// 基于RSI和MACD判断风险
 	if rsi > 80 || rsi < 20 {
 		return "🔴 高风险"
@@ -1031,15 +1132,15 @@ func GetTradingRecommendation(data *Data) string {
 	if data == nil {
 		return "观望"
 	}
-	
+
 	trend := GetTrendSummary(data)
 	signalStrength := GetSignalStrength(data)
 	riskLevel := GetRiskLevel(data)
-	
+
 	if signalStrength < 60 {
 		return "观望"
 	}
-	
+
 	switch trend {
 	case "📈 多头趋势":
 		if riskLevel == "🟢 低风险" {
@@ -1067,14 +1168,14 @@ func GetPriceTargets(data *Data) (float64, float64) {
 	if data == nil {
 		return 0, 0
 	}
-	
+
 	currentPrice := data.CurrentPrice
 	atr := data.LongerTermContext.ATR14
-	
+
 	// 基于ATR计算止损和止盈
-	stopLoss := currentPrice - (atr * 2)  // 2倍ATR止损
+	stopLoss := currentPrice - (atr * 2)   // 2倍ATR止损
 	takeProfit := currentPrice + (atr * 6) // 6倍ATR止盈（风险回报比1:3）
-	
+
 	return stopLoss, takeProfit
 }
 
@@ -1083,7 +1184,7 @@ func ValidateForTrading(data *Data) (bool, string) {
 	if data == nil {
 		return false, "数据无效"
 	}
-	
+
 	// 检查持仓量
 	if data.OpenInterest != nil && data.OpenInterest.Latest > 0 {
 		oiValue := data.OpenInterest.Latest * data.CurrentPrice
@@ -1092,24 +1193,25 @@ func ValidateForTrading(data *Data) (bool, string) {
 			return false, fmt.Sprintf("持仓价值过低(%.2fM USD < 15M)", oiValueInMillions)
 		}
 	}
-	
+
 	// 检查信号强度
 	if !IsStrongSignal(data) {
-		return false, "信号强度不足"
+		reason := GetSignalStrengthReason(data)
+		return false, fmt.Sprintf("信号强度不足: %s", reason)
 	}
-	
+
 	// 检查风险等级
 	riskLevel := GetRiskLevel(data)
 	if riskLevel == "🔴 高风险" {
 		return false, "风险等级过高"
 	}
-	
+
 	// ==================== 新增：震荡市过滤 ====================
 	marketCondition := DetectMarketCondition(data)
 	if marketCondition.Condition == "ranging" && marketCondition.Confidence > 60 {
 		return false, fmt.Sprintf("震荡市(置信度%d%%)，避免开仓", marketCondition.Confidence)
 	}
-	
+
 	return true, "适合交易"
 }
 
@@ -1118,9 +1220,9 @@ func GetMarketConditionSummary(data *Data) string {
 	if data == nil {
 		return "数据不足"
 	}
-	
+
 	condition := DetectMarketCondition(data)
-	
+
 	switch condition.Condition {
 	case "trending":
 		return fmt.Sprintf("📈 趋势市(置信度%d%%)", condition.Confidence)
@@ -1138,17 +1240,17 @@ func ShouldAvoidTrading(data *Data) (bool, string) {
 	if data == nil {
 		return true, "数据无效"
 	}
-	
+
 	// 检查震荡市
 	marketCondition := DetectMarketCondition(data)
 	if marketCondition.Condition == "ranging" && marketCondition.Confidence > 60 {
 		return true, fmt.Sprintf("高置信度震荡市(%d%%)，建议观望", marketCondition.Confidence)
 	}
-	
+
 	// 检查其他不适合交易的条件
 	if valid, reason := ValidateForTrading(data); !valid {
 		return true, reason
 	}
-	
+
 	return false, "适合交易"
 }

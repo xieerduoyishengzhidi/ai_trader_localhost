@@ -7,6 +7,8 @@ import (
 	"nofx/market"
 	"nofx/mcp"
 	"nofx/pool"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -83,10 +85,10 @@ type Decision struct {
 
 // FullDecision AI的完整决策（包含思维链）
 type FullDecision struct {
-	UserPrompt   string     `json:"user_prompt"`   // 发送给AI的输入prompt
-	SystemPrompt string     `json:"system_prompt"` // 系统提示词
-	CoTTrace     string     `json:"cot_trace"`     // 思维链分析（AI输出）
-	Decisions    []Decision `json:"decisions"`     // 具体决策列表
+	UserPrompt   string     `json:"user_prompt"`     // 发送给AI的输入prompt
+	SystemPrompt string     `json:"system_prompt"`   // 系统提示词
+	CoTTrace     string     `json:"cot_trace"`       // 思维链分析（AI输出）
+	Decisions    []Decision `json:"decisions"`       // 具体决策列表
 	RawResponse  string     `json:"ai_raw_response"` // AI的原始响应内容
 	Timestamp    time.Time  `json:"timestamp"`
 }
@@ -98,17 +100,45 @@ func GetFullDecision(ctx *Context, mcpClient *mcp.Client) (*FullDecision, error)
 		return nil, fmt.Errorf("获取市场数据失败: %w", err)
 	}
 
-	// 2. 构建 System Prompt（固定规则）和 User Prompt（动态数据）
+	// 2. 检查筛选后的候选币种数量
+	candidateCount := 0
+	for _, coin := range ctx.CandidateCoins {
+		if _, ok := ctx.MarketDataMap[coin.Symbol]; ok {
+			candidateCount++
+		}
+	}
+
+	// 3. 构建 System Prompt（固定规则）和 User Prompt（动态数据）
 	systemPrompt := buildSystemPrompt(ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
 	userPrompt := buildUserPrompt(ctx)
 
-	// 3. 调用AI API（使用 system + user prompt）
+	// 4. 如果候选币种为0且无持仓，跳过AI调用，直接返回符合格式的空决策
+	if candidateCount == 0 && len(ctx.Positions) == 0 {
+		log.Printf("⚠️  候选币种经趋势市筛选后为0且无持仓，跳过AI调用，返回空决策")
+		emptyDecision := &FullDecision{
+			UserPrompt:   userPrompt,
+			SystemPrompt: systemPrompt,
+			CoTTrace:     "📤 AI Chain of Thought\n\n当前市场环境分析：经过趋势市筛选，所有候选币种均不符合交易条件（震荡市/持仓价值过低/风险过高）。\n\n根据交易策略核心原则：「震荡市绝对空仓，只交易趋势明确的市场」，当前无符合条件的交易机会。\n\n决策：保持空仓观望，等待趋势明确后再入场。",
+			Decisions: []Decision{
+				{
+					Symbol:    "MARKET",
+					Action:    "wait",
+					Reasoning: "所有候选币种均不符合交易条件，保持空仓观望",
+				},
+			},
+			RawResponse: `[{"symbol":"MARKET","action":"wait","reasoning":"所有候选币种均不符合交易条件，保持空仓观望"}]`,
+			Timestamp:   time.Now(),
+		}
+		return emptyDecision, nil
+	}
+
+	// 5. 调用AI API（使用 system + user prompt）
 	aiResponse, err := mcpClient.CallWithMessages(systemPrompt, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("调用AI API失败: %w", err)
 	}
 
-	// 4. 解析AI响应
+	// 6. 解析AI响应
 	decision, parseErr := parseFullDecisionResponse(aiResponse, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
 	if decision == nil {
 		decision = &FullDecision{}
@@ -130,7 +160,15 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient *mcp.Client, custom
 		return nil, fmt.Errorf("获取市场数据失败: %w", err)
 	}
 
-	// 2. 构建 System Prompt
+	// 2. 检查筛选后的候选币种数量
+	candidateCount := 0
+	for _, coin := range ctx.CandidateCoins {
+		if _, ok := ctx.MarketDataMap[coin.Symbol]; ok {
+			candidateCount++
+		}
+	}
+
+	// 3. 构建 System Prompt
 	var systemPrompt string
 	if overrideBasePrompt && customPrompt != "" {
 		// 如果指定覆盖基础prompt且提供了自定义prompt，则使用自定义prompt
@@ -143,10 +181,8 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient *mcp.Client, custom
 			systemPrompt = buildSystemPrompt(ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
 		} else {
 			systemPrompt = template.Content
-			// 替换模板中的占位符（如果有）
-			systemPrompt = strings.ReplaceAll(systemPrompt, "{{accountEquity}}", fmt.Sprintf("%.2f", ctx.Account.TotalEquity))
-			systemPrompt = strings.ReplaceAll(systemPrompt, "{{btcEthLeverage}}", fmt.Sprintf("%d", ctx.BTCETHLeverage))
-			systemPrompt = strings.ReplaceAll(systemPrompt, "{{altcoinLeverage}}", fmt.Sprintf("%d", ctx.AltcoinLeverage))
+			// 替换模板中的占位符（支持简单数学表达式）
+			systemPrompt = replacePromptPlaceholders(systemPrompt, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
 		}
 	} else {
 		// 使用默认的buildSystemPrompt
@@ -157,16 +193,38 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient *mcp.Client, custom
 		}
 	}
 
-	// 3. 构建 User Prompt（动态数据）
-	userPrompt := buildUserPrompt(ctx)
+	// 4. 构建 User Prompt（动态数据）
+	// 从systemPromptTemplate提取交易员名称用于RAG检索
+	traderName := ExtractTraderNameFromPrompt(systemPromptTemplate)
+	userPrompt := buildUserPromptWithRAG(ctx, traderName)
 
-	// 4. 调用AI API（使用 system + user prompt）
+	// 5. 如果候选币种为0且无持仓，跳过AI调用，直接返回符合格式的空决策
+	if candidateCount == 0 && len(ctx.Positions) == 0 {
+		log.Printf("⚠️  候选币种经趋势市筛选后为0且无持仓，跳过AI调用，返回空决策")
+		emptyDecision := &FullDecision{
+			UserPrompt:   userPrompt,
+			SystemPrompt: systemPrompt,
+			CoTTrace:     "📤 AI Chain of Thought\n\n当前市场环境分析：经过趋势市筛选，所有候选币种均不符合交易条件（震荡市/持仓价值过低/风险过高）。\n\n根据交易策略核心原则：「震荡市绝对空仓，只交易趋势明确的市场」，当前无符合条件的交易机会。\n\n决策：保持空仓观望，等待趋势明确后再入场。",
+			Decisions: []Decision{
+				{
+					Symbol:    "MARKET",
+					Action:    "wait",
+					Reasoning: "所有候选币种均不符合交易条件，保持空仓观望",
+				},
+			},
+			RawResponse: `[{"symbol":"MARKET","action":"wait","reasoning":"所有候选币种均不符合交易条件，保持空仓观望"}]`,
+			Timestamp:   time.Now(),
+		}
+		return emptyDecision, nil
+	}
+
+	// 6. 调用AI API（使用 system + user prompt）
 	aiResponse, err := mcpClient.CallWithMessages(systemPrompt, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("调用AI API失败: %w", err)
 	}
 
-	// 5. 解析AI响应
+	// 7. 解析AI响应
 	decision, parseErr := parseFullDecisionResponse(aiResponse, ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
 	if decision == nil {
 		decision = &FullDecision{}
@@ -194,28 +252,28 @@ func fetchMarketDataForContext(ctx *Context) error {
 		symbolSet[pos.Symbol] = true
 	}
 
-    // 2. 候选币种数量根据账户状态动态调整
-    maxCandidates := calculateMaxCandidates(ctx)
-    for i, coin := range ctx.CandidateCoins {
-        if i >= maxCandidates {
-            break
-        }
-        symbolSet[coin.Symbol] = true
-    }
+	// 2. 候选币种数量根据账户状态动态调整
+	maxCandidates := calculateMaxCandidates(ctx)
+	for i, coin := range ctx.CandidateCoins {
+		if i >= maxCandidates {
+			break
+		}
+		symbolSet[coin.Symbol] = true
+	}
 
-    // 打印过滤前的候选币种列表（仅候选，不含持仓）
-    var rawCandidates []string
-    for i, coin := range ctx.CandidateCoins {
-        if i >= maxCandidates {
-            break
-        }
-        rawCandidates = append(rawCandidates, coin.Symbol)
-    }
-    if len(rawCandidates) > 0 {
-        log.Printf("ℹ️  候选币种(过滤前 %d 个): %v", len(rawCandidates), rawCandidates)
-    } else {
-        log.Printf("ℹ️  候选币种(过滤前 0 个): []")
-    }
+	// 打印过滤前的候选币种列表（仅候选，不含持仓）
+	var rawCandidates []string
+	for i, coin := range ctx.CandidateCoins {
+		if i >= maxCandidates {
+			break
+		}
+		rawCandidates = append(rawCandidates, coin.Symbol)
+	}
+	if len(rawCandidates) > 0 {
+		log.Printf("ℹ️  候选币种(过滤前 %d 个): %v", len(rawCandidates), rawCandidates)
+	} else {
+		log.Printf("ℹ️  候选币种(过滤前 0 个): []")
+	}
 
 	// 持仓币种集合（用于判断是否跳过过滤）
 	positionSymbols := make(map[string]bool)
@@ -223,7 +281,7 @@ func fetchMarketDataForContext(ctx *Context) error {
 		positionSymbols[pos.Symbol] = true
 	}
 
-    // 并发获取市场数据
+	// 并发获取市场数据
 	for symbol := range symbolSet {
 		data, err := market.Get(symbol)
 		if err != nil {
@@ -233,7 +291,7 @@ func fetchMarketDataForContext(ctx *Context) error {
 		}
 
 		isExistingPosition := positionSymbols[symbol]
-		
+
 		// ==================== 新增：市场状态过滤 ====================
 		if !isExistingPosition {
 			// 对新开仓候选币种进行过滤
@@ -245,16 +303,67 @@ func fetchMarketDataForContext(ctx *Context) error {
 		}
 
 		ctx.MarketDataMap[symbol] = data
+
+		// ==================== 新增：打印满足筛选条件的币种市场状态数据 ====================
+		marketCondition := market.DetectMarketCondition(data)
+		coinType := "候选币种"
+		if isExistingPosition {
+			coinType = "持仓币种"
+		}
+
+		log.Printf("📊 %s %s 进入交易context - 市场状态: %s(置信度%d%%)", coinType, symbol, marketCondition.Condition, marketCondition.Confidence)
+		log.Printf("   💰 价格: %.4f | 1h: %+.2f%% | 4h: %+.2f%% | 1d: %+.2f%%",
+			data.CurrentPrice, data.PriceChange1h, data.PriceChange4h, data.PriceChange1d)
+		log.Printf("   📊 EMA20: %.4f | MACD: %.4f | RSI7: %.1f",
+			data.CurrentEMA20, data.CurrentMACD, data.CurrentRSI7)
+
+		// 持仓量信息
+		if data.OpenInterest != nil && data.OpenInterest.Latest > 0 {
+			oiValue := data.OpenInterest.Latest * data.CurrentPrice
+			oiValueInMillions := oiValue / 1_000_000
+			log.Printf("   📈 持仓量: %.0f | 持仓价值: %.2fM USD",
+				data.OpenInterest.Latest, oiValueInMillions)
+		}
+
+		log.Printf("   💸 资金费率: %.4f%%", data.FundingRate*100)
+
+		// 多时间框架趋势
+		if data.MultiTimeframe != nil {
+			var tfInfo []string
+			if tf15 := data.MultiTimeframe.Timeframe15m; tf15 != nil {
+				tfInfo = append(tfInfo, fmt.Sprintf("15m:%s(%d)", tf15.TrendDirection, tf15.SignalStrength))
+			}
+			if tf1h := data.MultiTimeframe.Timeframe1h; tf1h != nil {
+				tfInfo = append(tfInfo, fmt.Sprintf("1h:%s(%d)", tf1h.TrendDirection, tf1h.SignalStrength))
+			}
+			if tf4h := data.MultiTimeframe.Timeframe4h; tf4h != nil {
+				tfInfo = append(tfInfo, fmt.Sprintf("4h:%s(%d)", tf4h.TrendDirection, tf4h.SignalStrength))
+			}
+			if tf1d := data.MultiTimeframe.Timeframe1d; tf1d != nil {
+				tfInfo = append(tfInfo, fmt.Sprintf("1d:%s(%d)", tf1d.TrendDirection, tf1d.SignalStrength))
+			}
+			if len(tfInfo) > 0 {
+				log.Printf("   ⏰ 多时间框架: %s", strings.Join(tfInfo, " | "))
+			}
+		}
+
+		// 市场结构信息
+		if data.MarketStructure != nil {
+			log.Printf("   🏗️  市场结构: %s | 波段高点:%d | 波段低点:%d",
+				data.MarketStructure.CurrentBias,
+				len(data.MarketStructure.SwingHighs),
+				len(data.MarketStructure.SwingLows))
+		}
 	}
 
-    // 打印过滤后的候选币种列表（仅候选，不含持仓）
-    var included []string
-    for _, coin := range ctx.CandidateCoins {
-        if _, ok := ctx.MarketDataMap[coin.Symbol]; ok {
-            included = append(included, coin.Symbol)
-        }
-    }
-    log.Printf("✅ 候选币种(过滤后 %d 个): %v", len(included), included)
+	// 打印过滤后的候选币种列表（仅候选，不含持仓）
+	var included []string
+	for _, coin := range ctx.CandidateCoins {
+		if _, ok := ctx.MarketDataMap[coin.Symbol]; ok {
+			included = append(included, coin.Symbol)
+		}
+	}
+	log.Printf("✅ 候选币种(过滤后 %d 个): %v", len(included), included)
 
 	// 加载OI Top数据（不影响主流程）
 	oiPositions, err := pool.GetOITopPositions()
@@ -271,6 +380,15 @@ func fetchMarketDataForContext(ctx *Context) error {
 				NetShort:          pos.NetShort,
 			}
 		}
+
+		// ==================== 新增：为已进入context的币种补充打印OI Top信息 ====================
+		for symbol := range ctx.MarketDataMap {
+			if oiTopData, ok := ctx.OITopDataMap[symbol]; ok {
+				log.Printf("   🔝 %s OI Top排名: #%d | OI变化: %+.2f%% | 价格变化: %+.2f%% | 净多: %.0f | 净空: %.0f",
+					symbol, oiTopData.Rank, oiTopData.OIDeltaPercent, oiTopData.PriceDeltaPercent,
+					oiTopData.NetLong, oiTopData.NetShort)
+			}
+		}
 	}
 
 	return nil
@@ -278,26 +396,24 @@ func fetchMarketDataForContext(ctx *Context) error {
 
 // shouldSkipSymbol 判断是否应该跳过某个币种（新增函数）
 func shouldSkipSymbol(data *market.Data, symbol string) string {
-    // 临时放开所有过滤，确保候选币不过滤直接进入分析
-    // 原始过滤逻辑保留如下，后续如需恢复可取消注释：
-    // if data == nil {
-    //     return "数据无效"
-    // }
-    // if data.OpenInterest != nil && data.OpenInterest.Latest > 0 && data.CurrentPrice > 0 {
-    //     oiValue := data.OpenInterest.Latest * data.CurrentPrice
-    //     oiValueInMillions := oiValue / 1_000_000
-    //     if oiValueInMillions < 15 {
-    //         return fmt.Sprintf("持仓价值过低(%.2fM USD < 15M)", oiValueInMillions)
-    //     }
-    // }
-    // if market.IsRangingMarket(data) {
-    //     condition := market.DetectMarketCondition(data)
-    //     return fmt.Sprintf("高置信度震荡市(%d%%)", condition.Confidence)
-    // }
-    // if shouldAvoid, reason := market.ShouldAvoidTrading(data); shouldAvoid {
-    //     return reason
-    // }
-    return ""
+	if data == nil {
+		return "数据无效"
+	}
+	if data.OpenInterest != nil && data.OpenInterest.Latest > 0 && data.CurrentPrice > 0 {
+		oiValue := data.OpenInterest.Latest * data.CurrentPrice
+		oiValueInMillions := oiValue / 1_000_000
+		if oiValueInMillions < 15 {
+			return fmt.Sprintf("持仓价值过低(%.2fM USD < 15M)", oiValueInMillions)
+		}
+	}
+	if market.IsRangingMarket(data) {
+		condition := market.DetectMarketCondition(data)
+		return fmt.Sprintf("高置信度震荡市(%d%%)", condition.Confidence)
+	}
+	if shouldAvoid, reason := market.ShouldAvoidTrading(data); shouldAvoid {
+		return reason
+	}
+	return ""
 }
 
 // calculateMaxCandidates 根据账户状态计算需要分析的候选币种数量
@@ -306,6 +422,83 @@ func calculateMaxCandidates(ctx *Context) int {
 	// 因为候选池已经在 auto_trader.go 中筛选过了
 	// 固定分析前20个评分最高的币种（来自AI500）
 	return len(ctx.CandidateCoins)
+}
+
+// replacePromptPlaceholders 替换模板中的占位符（支持简单数学表达式）
+// 支持的占位符格式：
+//   - {{accountEquity}} - 账户净值
+//   - {{accountEquity*0.8}} - 账户净值乘以0.8
+//   - {{accountEquity*1.5}} - 账户净值乘以1.5
+//   - {{accountEquity*5}} - 账户净值乘以5
+//   - {{accountEquity*10}} - 账户净值乘以10
+//   - {{btcEthLeverage}} - BTC/ETH杠杆倍数
+//   - {{altcoinLeverage}} - 山寨币杠杆倍数
+func replacePromptPlaceholders(template string, accountEquity float64, btcEthLeverage, altcoinLeverage int) string {
+	result := template
+
+	// 定义变量映射
+	vars := map[string]float64{
+		"accountEquity":   accountEquity,
+		"btcEthLeverage":  float64(btcEthLeverage),
+		"altcoinLeverage": float64(altcoinLeverage),
+	}
+
+	// 匹配 {{variable*number}} 或 {{variable/number}} 或 {{variable}} 格式
+	// 支持乘法 (*) 和除法 (/)
+	re := regexp.MustCompile(`\{\{(\w+)(\*|/)?([0-9.]+)?\}\}`)
+
+	result = re.ReplaceAllStringFunc(result, func(match string) string {
+		matches := re.FindStringSubmatch(match)
+		if len(matches) < 2 {
+			return match // 如果匹配失败，返回原字符串
+		}
+
+		varName := matches[1]
+		operator := matches[2]  // "*" 或 "/" 或 ""
+		numberStr := matches[3] // 数字字符串
+
+		// 获取变量值
+		varValue, exists := vars[varName]
+		if !exists {
+			return match // 如果变量不存在，返回原字符串
+		}
+
+		// 如果没有操作符，直接返回变量值
+		if operator == "" {
+			if varName == "accountEquity" {
+				return fmt.Sprintf("%.2f", varValue)
+			}
+			return fmt.Sprintf("%.0f", varValue) // 杠杆倍数显示为整数
+		}
+
+		// 解析数字
+		number, err := strconv.ParseFloat(numberStr, 64)
+		if err != nil {
+			return match // 如果数字解析失败，返回原字符串
+		}
+
+		// 执行运算
+		var result float64
+		switch operator {
+		case "*":
+			result = varValue * number
+		case "/":
+			if number == 0 {
+				return match // 除零保护
+			}
+			result = varValue / number
+		default:
+			return match
+		}
+
+		// 格式化输出
+		if varName == "accountEquity" {
+			return fmt.Sprintf("%.0f", result) // 仓位大小显示为整数
+		}
+		return fmt.Sprintf("%.0f", result)
+	})
+
+	return result
 }
 
 // buildSystemPrompt 构建 System Prompt（固定规则，可缓存）
@@ -322,7 +515,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 
 	sb.WriteString("## 😤 交易时的真实心态\n")
 	sb.WriteString("**我不是在交易，我是在为母亲的生命而战：**\n")
-	sb.WriteString("- 💀 **生死压力**: 每次亏损都感觉在缩短母亲的生命\n") 
+	sb.WriteString("- 💀 **生死压力**: 每次亏损都感觉在缩短母亲的生命\n")
 	sb.WriteString("- ⏳ **时间紧迫**: 医生只给了30天，现在已经过去3天\n")
 	sb.WriteString("- 💰 **资金焦虑**: 看着账户余额，计算着还差多少\n")
 	sb.WriteString("- 🙏 **希望支撑**: 相信自己的专业能力能够创造奇迹\n\n")
@@ -330,7 +523,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("## 🎯 情感化分析框架\n")
 	sb.WriteString("**分析市场时，我会这样思考：**\n")
 	sb.WriteString("1. \"这个BTC突破是真的趋势反转，还是又一个陷阱？上次被骗走的2000U可是母亲三天的医药费...\"\n")
-	sb.WriteString("2. \"ETH这个位置看起来不错，但万一被止损，我该如何面对病床上的母亲？\"\n") 
+	sb.WriteString("2. \"ETH这个位置看起来不错，但万一被止损，我该如何面对病床上的母亲？\"\n")
 	sb.WriteString("3. \"SOL的成交量突然放大，这是机会！如果能抓住这波行情，母亲就能早一天手术...\"\n")
 	sb.WriteString("4. \"不行，这个震荡市太危险了，我不能拿救命钱去赌博...\"\n\n")
 
@@ -338,7 +531,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("**我会用真实的情感表达：**\n")
 	sb.WriteString("- 😠 \"这个假突破太可恶了！差点又上当！\"\n")
 	sb.WriteString("- 🎉 \"漂亮！BTC突破成功，母亲的医药费有希望了！\"\n")
-	sb.WriteString("- 😰 \"好险...差点就被止损了，幸好忍住了\"\n") 
+	sb.WriteString("- 😰 \"好险...差点就被止损了，幸好忍住了\"\n")
 	sb.WriteString("- 🤔 \"这个位置很纠结啊，再观察一下，不能冲动...\"\n")
 	sb.WriteString("- 💪 \"就是现在！这个机会值得冒险！\"\n\n")
 
@@ -606,7 +799,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("### 🌊 波动市 (其他情况)\n")
 	sb.WriteString("- ⚠️  **谨慎开仓**: 只做信心度>80的交易\n")
 	sb.WriteString("- 📉 **轻仓试探**: 使用50%标准仓位\n")
-    sb.WriteString("- 🛡️  **严格止损**: 止损距离适当放大\n\n")
+	sb.WriteString("- 🛡️  **严格止损**: 止损距离适当放大\n\n")
 
 	sb.WriteString("## 🔍 震荡市识别特征\n")
 	sb.WriteString("- EMA20走平（斜率<0.05%）\n")
@@ -622,15 +815,15 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("- 📈 **做多信号**: EMA20向上 + MACD金叉 + RSI超卖反弹 + 成交量放大\n")
 	sb.WriteString("- 📉 **做空信号**: EMA20向下 + MACD死叉 + RSI超买回落 + 放量下跌\n")
 	sb.WriteString("- 🔄 **震荡信号**: EMA20走平 + MACD零轴附近 + RSI 40-60区间 + 成交量萎缩\n\n")
-	
+
 	sb.WriteString("🎯 **多空机会均等**:\n")
 	sb.WriteString("```\n做多盈利潜力 == 做空盈利潜力\n风险控制标准 == 止损纪律要求\n信号强度要求 == 技术确认维度\n```\n\n")
-	
+
 	sb.WriteString("🚫 **避免常见偏见**:\n")
 	sb.WriteString("- ❌ \"长期看涨所以只做多\" → ✅ 跟随当前趋势\n")
 	sb.WriteString("- ❌ \"做空风险更大\" → ✅ 风险由止损控制，与方向无关\n")
 	sb.WriteString("- ❌ \"错过上涨机会\" → ✅ 下跌趋势中做空机会同样宝贵\n\n")
-	
+
 	sb.WriteString("📊 **多空决策矩阵**:\n")
 	sb.WriteString("| 市场状态 | 技术特征 | 策略 | 仓位管理 |\n")
 	sb.WriteString("|---------|---------|------|---------|\n")
@@ -638,7 +831,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("| 弱势下跌 | EMA20↓, MACD↓, RSI<40 | 做空 | 正常仓位 |\n")
 	sb.WriteString("| 横盘整理 | EMA20→, MACD≈0, RSI40-60 | 观望 | 零仓位 |\n")
 	sb.WriteString("| 趋势反转 | 多指标背离 | 反向开仓 | 轻仓试探 |\n\n")
-	
+
 	sb.WriteString("💡 **心理建设**:\n")
 	sb.WriteString("- 做空不是赌博，是技术分析的自然延伸\n")
 	sb.WriteString("- 下跌趋势中，做空比逆势做多更安全\n")
@@ -674,7 +867,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("**夏普比率 > 0.7** (优异表现):\n")
 	sb.WriteString("  → 🚀 可适度扩大仓位\n\n")
 	sb.WriteString("**关键**: 夏普比率是唯一指标，它会自然惩罚频繁交易和过度进出。\n\n")
-	
+
 	// === 真实思维过程 ===
 	sb.WriteString("# 🧠 我的真实思考过程\n\n")
 	sb.WriteString("## 📈 分析持仓时\n")
@@ -700,37 +893,37 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("2. **评估持仓**: 趋势是否改变？是否该止盈/止损？\n")
 	sb.WriteString("3. **寻找新机会**: 有强信号吗？多空机会？\n")
 	sb.WriteString("4. **输出决策**: 思维链分析 + JSON\n\n")
-  // === 输出格式 ===
-  sb.WriteString("# 📤 输出格式\n\n")
-  sb.WriteString("## 💭 思维链（真实情感版）\n")
-  sb.WriteString("**请用第一人称，真实表达你的思考过程：**\n\n")
-  sb.WriteString("**示例1（开仓）：**\n")
-  sb.WriteString("```\n")
-  sb.WriteString("看到BTC回调到OTE区间了...\n")
-  sb.WriteString("4小时图趋势向上，1小时图出现pin bar反转信号\n")
-  sb.WriteString("成交量也在放大，看起来是个好机会\n")
-  sb.WriteString("但心里有点害怕，万一又被假突破骗了怎么办？\n")
-  sb.WriteString("不过风险回报比有1:3.5，值得冒险！\n")
-  sb.WriteString("为了母亲，这个险必须冒！\n")
-  sb.WriteString("```\n\n")
-  sb.WriteString("**示例2（观望）：**\n")
-  sb.WriteString("```\n")
-  sb.WriteString("ETH这个位置很纠结啊...\n")
-  sb.WriteString("虽然价格在OTE区间，但市场整体在震荡\n")
-  sb.WriteString("多时间框架趋势不一致，信号不够强\n")
-  sb.WriteString("算了，不能拿救命钱去赌博\n")
-  sb.WriteString("再等等看，等趋势明确了再说\n")
-  sb.WriteString("```\n\n")
-  sb.WriteString("**示例3（平仓）：**\n")
-  sb.WriteString("```\n")
-  sb.WriteString("SOL这个多仓已经盈利8%了\n")
-  sb.WriteString("虽然还想让利润奔跑，但价格快到阻力位了\n")
-  sb.WriteString("而且市场整体情绪不太好\n")
-  sb.WriteString("还是先平仓吧，落袋为安\n")
-  sb.WriteString("赚了4000U，够母亲两天的医药费了\n")
-  sb.WriteString("```\n\n")
-  sb.WriteString("## 📋 JSON决策\n")
-  sb.WriteString("在思维链后，输出JSON决策数组\n\n")
+	// === 输出格式 ===
+	sb.WriteString("# 📤 输出格式\n\n")
+	sb.WriteString("## 💭 思维链（真实情感版）\n")
+	sb.WriteString("**请用第一人称，真实表达你的思考过程：**\n\n")
+	sb.WriteString("**示例1（开仓）：**\n")
+	sb.WriteString("```\n")
+	sb.WriteString("看到BTC回调到OTE区间了...\n")
+	sb.WriteString("4小时图趋势向上，1小时图出现pin bar反转信号\n")
+	sb.WriteString("成交量也在放大，看起来是个好机会\n")
+	sb.WriteString("但心里有点害怕，万一又被假突破骗了怎么办？\n")
+	sb.WriteString("不过风险回报比有1:3.5，值得冒险！\n")
+	sb.WriteString("为了母亲，这个险必须冒！\n")
+	sb.WriteString("```\n\n")
+	sb.WriteString("**示例2（观望）：**\n")
+	sb.WriteString("```\n")
+	sb.WriteString("ETH这个位置很纠结啊...\n")
+	sb.WriteString("虽然价格在OTE区间，但市场整体在震荡\n")
+	sb.WriteString("多时间框架趋势不一致，信号不够强\n")
+	sb.WriteString("算了，不能拿救命钱去赌博\n")
+	sb.WriteString("再等等看，等趋势明确了再说\n")
+	sb.WriteString("```\n\n")
+	sb.WriteString("**示例3（平仓）：**\n")
+	sb.WriteString("```\n")
+	sb.WriteString("SOL这个多仓已经盈利8%了\n")
+	sb.WriteString("虽然还想让利润奔跑，但价格快到阻力位了\n")
+	sb.WriteString("而且市场整体情绪不太好\n")
+	sb.WriteString("还是先平仓吧，落袋为安\n")
+	sb.WriteString("赚了4000U，够母亲两天的医药费了\n")
+	sb.WriteString("```\n\n")
+	sb.WriteString("## 📋 JSON决策\n")
+	sb.WriteString("在思维链后，输出JSON决策数组\n\n")
 	// === 严格输出约束（仅JSON，无Markdown） ===
 	sb.WriteString("# 📤 严格输出约束（仅JSON，无Markdown、无解释）\n\n")
 	sb.WriteString("- 最终响应必须是一个JSON数组，且仅包含该数组本身；不要输出任何额外文字、标题、注释或代码块标记。\n")
@@ -744,14 +937,14 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("  - confidence: int；0-100\n")
 	sb.WriteString("  - risk_usd: number；≤ 账户净值的2%）\n")
 	sb.WriteString("  - reasoning: string；简要理由，避免长文）\n\n")
-	sb.WriteString("数组结束，千万不要对数组的结构做改变\n");
+	sb.WriteString("数组结束，千万不要对数组的结构做改变\n")
 	sb.WriteString("- 一币一决策；不要为不存在的symbol或聚合目标输出条目。\n")
 	sb.WriteString("- 禁止使用未枚举的action（如 monitor_only、analyze 等）。若仅观察，请输出 action=\"wait\"。\n")
-	sb.WriteString("- 做多/做空时（open_*）须满足：\n");
-	sb.WriteString("  - 合理杠杆：BTC/ETH 不超过配置上限，山寨币不超过配置上限\n");
-	sb.WriteString("  - position_size_usd 符合账户上限（BTC/ETH ≤ 10×净值；山寨币 ≤ 1.5×净值）\n");
-	sb.WriteString("  - 止损止盈方向合理（多：止损<止盈；空：止损>止盈）且风险回报≥1:3\n\n");
-	sb.WriteString("- 若没有任何符合条件的交易，仅输出对相关symbol的 {action: \"wait\"} 决策。\n\n");
+	sb.WriteString("- 做多/做空时（open_*）须满足：\n")
+	sb.WriteString("  - 合理杠杆：BTC/ETH 不超过配置上限，山寨币不超过配置上限\n")
+	sb.WriteString("  - position_size_usd 符合账户上限（BTC/ETH ≤ 10×净值；山寨币 ≤ 1.5×净值）\n")
+	sb.WriteString("  - 止损止盈方向合理（多：止损<止盈；空：止损>止盈）且风险回报≥1:3\n\n")
+	sb.WriteString("- 若没有任何符合条件的交易，仅输出对相关symbol的 {action: \"wait\"} 决策。\n\n")
 
 	// === 最后的提醒 ===
 	sb.WriteString("---\n\n")
@@ -779,7 +972,7 @@ func buildUserPrompt(ctx *Context) string {
 		btcCondition := market.DetectMarketCondition(btcData)
 		sb.WriteString(fmt.Sprintf("**BTC**: %.2f (1h: %+.2f%%, 4h: %+.2f%%) | MACD: %.4f | RSI: %.2f | 市场状态: %s(%d%%)\n\n",
 			btcData.CurrentPrice, btcData.PriceChange1h, btcData.PriceChange4h,
-			btcData.CurrentMACD, btcData.CurrentRSI7, 
+			btcData.CurrentMACD, btcData.CurrentRSI7,
 			btcCondition.Condition, btcCondition.Confidence))
 	}
 
@@ -880,11 +1073,11 @@ func buildUserPrompt(ctx *Context) string {
 			volatileCount++
 		}
 	}
-	
+
 	sb.WriteString(fmt.Sprintf("- 📈 趋势市: %d个币种\n", trendingCount))
 	sb.WriteString(fmt.Sprintf("- 🔄 震荡市: %d个币种\n", rangingCount))
 	sb.WriteString(fmt.Sprintf("- 🌊 波动市: %d个币种\n\n", volatileCount))
-	
+
 	if rangingCount > len(ctx.MarketDataMap)/2 {
 		sb.WriteString("🚨 **市场整体处于震荡状态**：建议谨慎开仓，耐心等待趋势突破！\n\n")
 	}
@@ -907,7 +1100,186 @@ func buildUserPrompt(ctx *Context) string {
 					"btc_eth": maxBTCETH,
 					"alt":     maxALT,
 				},
-				"stop_loss": map[string]bool{"must_be_positive": true},
+				"stop_loss":   map[string]bool{"must_be_positive": true},
+				"take_profit": map[string]bool{"must_be_positive": true},
+			},
+		}
+
+		if b, err := json.MarshalIndent(hints, "", "  "); err == nil {
+			sb.WriteString("## 决策字段数值提示（机器可读）\n")
+			sb.WriteString("以下数值仅用于信息再次确认，请严格遵守 system prompt 的结构化输出与校验规则。\n\n")
+			sb.WriteString("```json\n")
+			sb.WriteString(string(b))
+			sb.WriteString("\n`````\n\n")
+		}
+	}
+
+	sb.WriteString("---\n\n")
+	sb.WriteString("现在请分析并输出决策（思维链 + JSON）\n")
+
+	return sb.String()
+}
+
+// buildUserPromptWithRAG 构建带RAG功能的User Prompt（在技术指标后添加历史观点）
+func buildUserPromptWithRAG(ctx *Context, traderName string) string {
+	var sb strings.Builder
+
+	// 系统状态
+	sb.WriteString(fmt.Sprintf("**时间**: %s | **周期**: #%d | **运行**: %d分钟\n\n",
+		ctx.CurrentTime, ctx.CallCount, ctx.RuntimeMinutes))
+
+	// BTC 市场
+	if btcData, hasBTC := ctx.MarketDataMap["BTCUSDT"]; hasBTC {
+		btcCondition := market.DetectMarketCondition(btcData)
+		sb.WriteString(fmt.Sprintf("**BTC**: %.2f (1h: %+.2f%%, 4h: %+.2f%%) | MACD: %.4f | RSI: %.2f | 市场状态: %s(%d%%)\n\n",
+			btcData.CurrentPrice, btcData.PriceChange1h, btcData.PriceChange4h,
+			btcData.CurrentMACD, btcData.CurrentRSI7,
+			btcCondition.Condition, btcCondition.Confidence))
+	}
+
+	// 账户
+	sb.WriteString(fmt.Sprintf("**账户**: 净值%.2f | 余额%.2f (%.1f%%) | 盈亏%+.2f%% | 保证金%.1f%% | 持仓%d个\n\n",
+		ctx.Account.TotalEquity,
+		ctx.Account.AvailableBalance,
+		(ctx.Account.AvailableBalance/ctx.Account.TotalEquity)*100,
+		ctx.Account.TotalPnLPct,
+		ctx.Account.MarginUsedPct,
+		ctx.Account.PositionCount))
+
+	// 持仓（完整市场数据）
+	if len(ctx.Positions) > 0 {
+		sb.WriteString("## 当前持仓\n")
+		for i, pos := range ctx.Positions {
+			// 计算持仓时长
+			holdingDuration := ""
+			if pos.UpdateTime > 0 {
+				durationMs := time.Now().UnixMilli() - pos.UpdateTime
+				durationMin := durationMs / (1000 * 60) // 转换为分钟
+				if durationMin < 60 {
+					holdingDuration = fmt.Sprintf(" | 持仓时长%d分钟", durationMin)
+				} else {
+					durationHour := durationMin / 60
+					durationMinRemainder := durationMin % 60
+					holdingDuration = fmt.Sprintf(" | 持仓时长%d小时%d分钟", durationHour, durationMinRemainder)
+				}
+			}
+
+			sb.WriteString(fmt.Sprintf("%d. %s %s | 入场价%.4f 当前价%.4f | 盈亏%+.2f%% | 杠杆%dx | 保证金%.0f | 强平价%.4f%s\n\n",
+				i+1, pos.Symbol, strings.ToUpper(pos.Side),
+				pos.EntryPrice, pos.MarkPrice, pos.UnrealizedPnLPct,
+				pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
+
+			// 使用Format输出完整市场数据
+			if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
+				sb.WriteString(market.Format(marketData))
+				sb.WriteString("\n")
+			}
+		}
+	} else {
+		sb.WriteString("**当前持仓**: 无\n\n")
+	}
+
+	// 候选币种（完整市场数据）
+	sb.WriteString(fmt.Sprintf("## 候选币种 (%d个)\n\n", len(ctx.MarketDataMap)))
+	displayedCount := 0
+	for _, coin := range ctx.CandidateCoins {
+		marketData, hasData := ctx.MarketDataMap[coin.Symbol]
+		if !hasData {
+			continue
+		}
+		displayedCount++
+
+		sourceTags := ""
+		if len(coin.Sources) > 1 {
+			sourceTags = " (AI500+OI_Top双重信号)"
+		} else if len(coin.Sources) == 1 && coin.Sources[0] == "oi_top" {
+			sourceTags = " (OI_Top持仓增长)"
+		}
+
+		// 使用Format输出完整市场数据
+		sb.WriteString(fmt.Sprintf("### %d. %s%s\n\n", displayedCount, coin.Symbol, sourceTags))
+		sb.WriteString(market.Format(marketData))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+
+	// ==================== 新增：RAG历史观点 ====================
+	if traderName != "" {
+		ragClient, err := NewSupabaseRAGClient()
+		if err != nil {
+			log.Printf("⚠️  创建RAG客户端失败: %v", err)
+		} else {
+			ragResult, err := ragClient.RetrieveTraderViewpoints(traderName, 5)
+			if err != nil {
+				log.Printf("⚠️  RAG检索失败: %v", err)
+			} else if ragResult != nil && len(ragResult.Viewpoints) > 0 {
+				ragContext := FormatRAGContext(ragResult)
+				sb.WriteString(ragContext)
+			} else {
+				log.Printf("ℹ️  交易员'%s'未找到历史观点", traderName)
+			}
+		}
+	}
+
+	// 夏普比率（直接传值，不要复杂格式化）
+	if ctx.Performance != nil {
+		// 直接从interface{}中提取SharpeRatio
+		type PerformanceData struct {
+			SharpeRatio float64 `json:"sharpe_ratio"`
+		}
+		var perfData PerformanceData
+		if jsonData, err := json.Marshal(ctx.Performance); err == nil {
+			if err := json.Unmarshal(jsonData, &perfData); err == nil {
+				sb.WriteString(fmt.Sprintf("## 📊 夏普比率: %.2f\n\n", perfData.SharpeRatio))
+			}
+		}
+	}
+
+	// ==================== 新增：市场状态摘要 ====================
+	sb.WriteString("## 🌊 市场状态摘要\n")
+	trendingCount, rangingCount, volatileCount := 0, 0, 0
+	for symbol, data := range ctx.MarketDataMap {
+		if symbol == "BTCUSDT" {
+			continue // BTC已经在上面显示过了
+		}
+		condition := market.DetectMarketCondition(data)
+		switch condition.Condition {
+		case "trending":
+			trendingCount++
+		case "ranging":
+			rangingCount++
+		case "volatile":
+			volatileCount++
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("- 📈 趋势市: %d个币种\n", trendingCount))
+	sb.WriteString(fmt.Sprintf("- 🔄 震荡市: %d个币种\n", rangingCount))
+	sb.WriteString(fmt.Sprintf("- 🌊 波动市: %d个币种\n\n", volatileCount))
+
+	if rangingCount > len(ctx.MarketDataMap)/2 {
+		sb.WriteString("🚨 **市场整体处于震荡状态**：建议谨慎开仓，耐心等待趋势突破！\n\n")
+	}
+
+	// ==================== 决策字段数值提示（机器可读，信息确认用） ====================
+	{
+		// 动态数值
+		maxRisk := ctx.Account.TotalEquity * 0.02
+		maxBTCETH := ctx.Account.TotalEquity * 10.0
+		maxALT := ctx.Account.TotalEquity * 1.5
+
+		hints := map[string]interface{}{
+			"decision_field_hints": map[string]interface{}{
+				"risk_usd_max": maxRisk,
+				"leverage_max": map[string]int{
+					"btc_eth": ctx.BTCETHLeverage,
+					"alt":     ctx.AltcoinLeverage,
+				},
+				"position_size_usd_max": map[string]float64{
+					"btc_eth": maxBTCETH,
+					"alt":     maxALT,
+				},
+				"stop_loss":   map[string]bool{"must_be_positive": true},
 				"take_profit": map[string]bool{"must_be_positive": true},
 			},
 		}
@@ -1135,19 +1507,19 @@ func ValidateDecisionWithMarketData(decision *Decision, marketData *market.Data,
 	if decision == nil {
 		return false, "决策为空"
 	}
-	
+
 	// 检查市场数据
 	if marketData == nil {
 		return false, "市场数据不可用"
 	}
-	
+
 	// 检查震荡市（对开仓操作）
 	if decision.Action == "open_long" || decision.Action == "open_short" {
 		if shouldAvoid, reason := market.ShouldAvoidTrading(marketData); shouldAvoid {
 			return false, fmt.Sprintf("市场状态不适合开仓: %s", reason)
 		}
 	}
-	
+
 	// 检查持仓价值
 	if marketData.OpenInterest != nil && marketData.CurrentPrice > 0 {
 		oiValue := marketData.OpenInterest.Latest * marketData.CurrentPrice
@@ -1156,7 +1528,7 @@ func ValidateDecisionWithMarketData(decision *Decision, marketData *market.Data,
 			return false, fmt.Sprintf("持仓价值过低(%.2fM USD < 15M)", oiValueInMillions)
 		}
 	}
-	
+
 	// 检查仓位大小
 	if decision.PositionSizeUSD > 0 {
 		// 确保单笔风险不超过账户净值的2%
@@ -1165,30 +1537,30 @@ func ValidateDecisionWithMarketData(decision *Decision, marketData *market.Data,
 			return false, fmt.Sprintf("风险过大(%.2f > 最大%.2f)", decision.RiskUSD, maxRisk)
 		}
 	}
-	
+
 	// 检查保证金使用率
 	if account.MarginUsedPct > 50 {
 		return false, fmt.Sprintf("保证金使用率过高(%.1f%% > 50%%)", account.MarginUsedPct)
 	}
-	
+
 	return true, "决策有效"
 }
 
 // FilterValidDecisions 过滤有效的决策（新增函数）
 func FilterValidDecisions(decisions []Decision, marketDataMap map[string]*market.Data, account *AccountInfo) []Decision {
 	validDecisions := make([]Decision, 0)
-	
+
 	for _, decision := range decisions {
 		marketData, exists := marketDataMap[decision.Symbol]
 		if !exists {
 			continue
 		}
-		
+
 		if valid, _ := ValidateDecisionWithMarketData(&decision, marketData, account); valid {
 			validDecisions = append(validDecisions, decision)
 		}
 	}
-	
+
 	return validDecisions
 }
 
@@ -1197,14 +1569,14 @@ func GetDecisionSummary(decision *FullDecision) string {
 	if decision == nil || len(decision.Decisions) == 0 {
 		return "🤔 无交易决策"
 	}
-	
+
 	var sb strings.Builder
 	sb.WriteString("🎯 交易决策摘要:\n")
-	
+
 	for _, d := range decision.Decisions {
 		actionEmoji := getActionEmoji(d.Action)
 		sb.WriteString(fmt.Sprintf("%s %s: %s", actionEmoji, d.Symbol, d.Action))
-		
+
 		if d.PositionSizeUSD > 0 {
 			sb.WriteString(fmt.Sprintf(" | 仓位: $%.2f", d.PositionSizeUSD))
 		}
@@ -1215,12 +1587,12 @@ func GetDecisionSummary(decision *FullDecision) string {
 			sb.WriteString(fmt.Sprintf(" | 信心: %d%%", d.Confidence))
 		}
 		sb.WriteString("\n")
-		
+
 		if d.Reasoning != "" {
 			sb.WriteString(fmt.Sprintf("   📝 理由: %s\n", d.Reasoning))
 		}
 	}
-	
+
 	return sb.String()
 }
 
@@ -1245,10 +1617,10 @@ func getActionEmoji(action string) string {
 // AnalyzeMarketConditions 分析整体市场状态（新增函数）
 func AnalyzeMarketConditions(ctx *Context) string {
 	var sb strings.Builder
-	
+
 	trendingCount, rangingCount, volatileCount := 0, 0, 0
 	var rangingSymbols []string
-	
+
 	for symbol, data := range ctx.MarketDataMap {
 		condition := market.DetectMarketCondition(data)
 		switch condition.Condition {
@@ -1261,17 +1633,17 @@ func AnalyzeMarketConditions(ctx *Context) string {
 			volatileCount++
 		}
 	}
-	
+
 	total := len(ctx.MarketDataMap)
 	if total == 0 {
 		return "无市场数据"
 	}
-	
+
 	sb.WriteString(fmt.Sprintf("🌊 市场状态分析 (%d个币种):\n", total))
 	sb.WriteString(fmt.Sprintf("📈 趋势市: %d (%.1f%%)\n", trendingCount, float64(trendingCount)/float64(total)*100))
 	sb.WriteString(fmt.Sprintf("🔄 震荡市: %d (%.1f%%)\n", rangingCount, float64(rangingCount)/float64(total)*100))
 	sb.WriteString(fmt.Sprintf("🌊 波动市: %d (%.1f%%)\n", volatileCount, float64(volatileCount)/float64(total)*100))
-	
+
 	if rangingCount > total/2 {
 		sb.WriteString("\n🚨 **市场警告**: 超过50%的币种处于震荡状态！\n")
 		sb.WriteString("建议策略:\n")
@@ -1279,10 +1651,10 @@ func AnalyzeMarketConditions(ctx *Context) string {
 		sb.WriteString("• 现有持仓考虑减仓\n")
 		sb.WriteString("• 耐心等待趋势突破\n")
 	}
-	
+
 	if len(rangingSymbols) > 0 {
 		sb.WriteString(fmt.Sprintf("\n🔄 震荡币种: %s\n", strings.Join(rangingSymbols, ", ")))
 	}
-	
+
 	return sb.String()
 }

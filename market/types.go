@@ -16,8 +16,9 @@ type Data struct {
 	FundingRate       float64
 	MultiTimeframe    *MultiTimeframeData
 	LongerTermContext *LongerTermData
-	MarketStructure   *MarketStructure // 新增：市场结构分析
-	FibLevels         *FibLevels       // 新增：斐波那契水平
+	MarketStructure   *MarketStructure   // 新增：市场结构分析
+	FibLevels         *FibLevels         // 新增：斐波那契水平
+	PatternRecognition *PatternRecognition `json:"pattern_recognition,omitempty"` // 新增：形态识别汇总
 }
 
 // OIData Open Interest数据
@@ -88,8 +89,28 @@ type TimeframeData struct {
 	ATR14          float64
 	Volume         float64
 	PriceSeries    []float64
-	TrendDirection string // "bullish", "bearish", "neutral"
-	SignalStrength int    // 0-100
+	TrendDirection string              // "bullish", "bearish", "neutral"
+	SignalStrength int                 // 0-100
+	Patterns       []CandlestickPattern `json:"patterns,omitempty"` // 新增：形态识别结果
+}
+
+// CandlestickPattern 单个形态识别结果
+type CandlestickPattern struct {
+	Name        string  `json:"name"`         // 形态名称（如 "CDLENGULFING"）
+	DisplayName string  `json:"display_name"` // 显示名称（如 "吞噬形态"）
+	Signal      int     `json:"signal"`       // 信号：100=看涨, -100=看跌, 0=无信号（保留用于兼容）
+	Side        string  `json:"side"`        // 语义化信号："bullish" 或 "bearish"（推荐使用）
+	Timeframe   string  `json:"timeframe"`    // 时间框架（15m, 1h, 4h, 1d）
+	Index       int     `json:"index"`        // K线索引（-1表示最新一根）
+	Confidence  float64 `json:"confidence"`   // 置信度（0-1，已包含量能分析）
+	Note        string  `json:"note,omitempty"` // 可选备注（如 "Double Volume"）
+}
+
+// PatternRecognition 形态识别结果集合
+type PatternRecognition struct {
+	Symbol    string                `json:"symbol"`
+	Patterns  []CandlestickPattern `json:"patterns"`
+	Timestamp int64                `json:"timestamp"`
 }
 
 // Binance API 响应结构

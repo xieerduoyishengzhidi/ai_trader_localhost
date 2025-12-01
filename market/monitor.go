@@ -12,7 +12,7 @@ import (
 type WSMonitor struct {
 	wsClient       *WSClient
 	combinedClient *CombinedStreamsClient
-	symbols        []string
+	symbols        []string 
 	featuresMap    sync.Map
 	alertsChan     chan Alert
 	klineDataMap3m sync.Map // 存储每个交易对的K线历史数据

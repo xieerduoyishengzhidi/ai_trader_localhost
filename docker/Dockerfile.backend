@@ -58,7 +58,10 @@ FROM alpine:${ALPINE_VERSION}
 
 RUN apk update && apk add --no-cache ca-certificates tzdata
 
+# ⚠️ 关键：复制TA-Lib库文件并设置LD_LIBRARY_PATH
 COPY --from=ta-lib-builder /usr/local /usr/local
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+
 WORKDIR /app
 COPY --from=backend-builder /app/nofx .
 
