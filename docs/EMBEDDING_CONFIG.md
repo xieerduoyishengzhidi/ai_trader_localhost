@@ -233,3 +233,4 @@ A: 环境变量 > 代码中的默认值。如果设置了环境变量，将优�
 - [Embedding 模型选择指南](./EMBEDDING_MODEL_GUIDE.md) - 详细的模型选择说明
 - [config.py](../config.py) - 配置模块源代码
 
+

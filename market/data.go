@@ -225,18 +225,19 @@ func calculatePriceChannel(data *Data) float64 {
 	return channelWidth
 }
 
-// analyzeRSIPosition 分析RSI位置
+// analyzeRSIPosition 分析RSI位置 (修改版)
 func analyzeRSIPosition(data *Data) float64 {
 	// 使用现有RSI数据判断是否在震荡区间
 	rsiValue := data.CurrentRSI7
 
-	// 判断RSI是否在震荡区间 (30-70)
-	if rsiValue >= 30 && rsiValue <= 70 {
-		return 80 // 高概率震荡
+	// 修改点：缩小震荡判断范围，只有 RSI 真的卡在中间 (45-55) 才返回高概率震荡
+	// RSI 在 30-70 之间是最正常的行情，不应该直接判定为震荡
+	if rsiValue >= 45 && rsiValue <= 55 {
+		return 80 // 高概率震荡（只有中间区域）
 	} else if rsiValue >= 40 && rsiValue <= 60 {
-		return 95 // 极高概率震荡
+		return 50 // 中等概率震荡（稍微放宽）
 	} else {
-		return 30 // 低概率震荡
+		return 20 // 低概率震荡（正常趋势区间）
 	}
 }
 
@@ -491,9 +492,9 @@ func determineTrendDirection(price, ema20, ema50, macd float64) string {
 		bearishSignals++
 	}
 
-	if macd > 0.001 {
+	if macd > 0 {
 		bullishSignals++
-	} else if macd < -0.001 {
+	} else if macd < -0 {
 		bearishSignals++
 	}
 
@@ -516,17 +517,17 @@ func calculateTimeframeSignalStrength(price, ema20, ema50, macd, rsi7 float64) i
 		strength -= 20
 	}
 
-	// MACD信号
-	if macd > 0.001 {
-		strength += 15
-	} else if macd < -0.001 {
+	// MACD信号 (这里你之前已经改对了，保持 > 0 即可)
+	if macd > 0 {
+		strength += 15 // 稍微增加MACD权重
+	} else if macd < 0 {
 		strength -= 15
 	}
 
 	// RSI信号
 	if rsi7 < 30 {
 		strength += 10
-	} else if rsi7 > 70 {
+	} else if rsi7 > 85 { // 修改点：同步放宽到 85 才扣分
 		strength -= 10
 	}
 
@@ -1015,7 +1016,7 @@ func IsStrongSignal(data *Data) bool {
 	trendSummary := GetTrendSummary(data)
 
 	// 强信号标准：信号强度>70且趋势明确
-	return signalStrength > 70 && (trendSummary == "📈 多头趋势" || trendSummary == "📉 空头趋势")
+	return signalStrength > 55 && (trendSummary == "📈 多头趋势" || trendSummary == "📉 空头趋势")
 }
 
 // GetSignalStrengthReason 获取信号强度不足的详细理由
@@ -1029,9 +1030,9 @@ func GetSignalStrengthReason(data *Data) string {
 
 	var reasons []string
 
-	// 检查信号强度
-	if signalStrength <= 70 {
-		reasons = append(reasons, fmt.Sprintf("综合信号强度%d(要求>70)", signalStrength))
+	// 修改点 1：把日志报错门槛也降到 55，保持一致
+	if signalStrength < 55 {
+		reasons = append(reasons, fmt.Sprintf("综合信号强度%d(要求>=55)", signalStrength))
 	}
 
 	// 检查趋势明确性
@@ -1054,40 +1055,23 @@ func GetSignalStrengthReason(data *Data) string {
 	for _, tf := range timeframes {
 		if tf.tf != nil {
 			strength := tf.tf.SignalStrength
-			trend := tf.tf.TrendDirection
 
-			// 分析该时间框架信号强度不足的原因
 			var tfReasons []string
 
-			// 检查价格与EMA关系
-			price := tf.tf.CurrentPrice
-			ema20 := tf.tf.EMA20
-			ema50 := tf.tf.EMA50
-
-			if ema20 > 0 && ema50 > 0 {
-				if !(price > ema20 && ema20 > ema50) && !(price < ema20 && ema20 < ema50) {
-					tfReasons = append(tfReasons, "价格与EMA排列不明确")
-				}
+			// 修改点 2：删除 MACD 绝对值 0.001 的检查
+			// 只有当 MACD 几乎完全为 0 时才提示微弱，否则不提示
+			if math.Abs(tf.tf.MACD) == 0 {
+				tfReasons = append(tfReasons, "MACD无信号")
 			}
 
-			// 检查MACD
-			macd := tf.tf.MACD
-			if macd >= -0.001 && macd <= 0.001 {
-				tfReasons = append(tfReasons, "MACD信号微弱")
+			// 修改点 3：RSI 提示范围缩小
+			// 只有 RSI 真的卡在中间 (45-55) 才提示中性，不然 40-60 都是可交易区间
+			if tf.tf.RSI7 >= 45 && tf.tf.RSI7 <= 55 {
+				tfReasons = append(tfReasons, "RSI无方向")
 			}
 
-			// 检查RSI
-			rsi7 := tf.tf.RSI7
-			if rsi7 >= 30 && rsi7 <= 70 {
-				tfReasons = append(tfReasons, "RSI处于中性区间")
-			}
-
-			// 检查趋势方向
-			if trend == "neutral" {
-				tfReasons = append(tfReasons, "趋势方向不明确")
-			}
-
-			if strength < 60 {
+			// 只有分数很低才记录
+			if strength < 50 {
 				reasonStr := fmt.Sprintf("%s强度%d", tf.name, strength)
 				if len(tfReasons) > 0 {
 					reasonStr += "(" + strings.Join(tfReasons, ",") + ")"
@@ -1098,7 +1082,7 @@ func GetSignalStrengthReason(data *Data) string {
 	}
 
 	if len(weakTimeframes) > 0 {
-		reasons = append(reasons, fmt.Sprintf("时间框架信号不足:%s", strings.Join(weakTimeframes, ";")))
+		reasons = append(reasons, fmt.Sprintf("弱势周期:%s", strings.Join(weakTimeframes, ";")))
 	}
 
 	if len(reasons) == 0 {
@@ -1118,7 +1102,7 @@ func GetRiskLevel(data *Data) string {
 	macd := data.CurrentMACD
 
 	// 基于RSI和MACD判断风险
-	if rsi > 80 || rsi < 20 {
+	if rsi > 85 || rsi < 15 {
 		return "🔴 高风险"
 	} else if (rsi > 70 && macd < 0) || (rsi < 30 && macd > 0) {
 		return "🟡 中风险"
@@ -1208,7 +1192,7 @@ func ValidateForTrading(data *Data) (bool, string) {
 
 	// ==================== 新增：震荡市过滤 ====================
 	marketCondition := DetectMarketCondition(data)
-	if marketCondition.Condition == "ranging" && marketCondition.Confidence > 60 {
+	if marketCondition.Condition == "ranging" && marketCondition.Confidence > 80 {
 		return false, fmt.Sprintf("震荡市(置信度%d%%)，避免开仓", marketCondition.Confidence)
 	}
 
@@ -1235,7 +1219,7 @@ func GetMarketConditionSummary(data *Data) string {
 	}
 }
 
-// ShouldAvoidTrading 是否应避免交易（新增函数）
+// ShouldAvoidTrading 是否应避免交易 (修改版)
 func ShouldAvoidTrading(data *Data) (bool, string) {
 	if data == nil {
 		return true, "数据无效"
@@ -1243,7 +1227,8 @@ func ShouldAvoidTrading(data *Data) (bool, string) {
 
 	// 检查震荡市
 	marketCondition := DetectMarketCondition(data)
-	if marketCondition.Condition == "ranging" && marketCondition.Confidence > 60 {
+	// 修改点：同步提高到 80，保持逻辑一致
+	if marketCondition.Condition == "ranging" && marketCondition.Confidence > 80 {
 		return true, fmt.Sprintf("高置信度震荡市(%d%%)，建议观望", marketCondition.Confidence)
 	}
 

@@ -48,7 +48,8 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux \
-    CGO_CFLAGS="-D_LARGEFILE64_SOURCE" \
+    CGO_CFLAGS="-D_LARGEFILE64_SOURCE -I/usr/local/include -I/usr/local/include/ta-lib" \
+    CGO_LDFLAGS="-L/usr/local/lib" \
     go build -trimpath -ldflags="-s -w" -o nofx .
 
 # ──────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ RUN apk update && apk add --no-cache ca-certificates tzdata
 
 # ⚠️ 关键：复制TA-Lib库文件并设置LD_LIBRARY_PATH
 COPY --from=ta-lib-builder /usr/local /usr/local
-ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/usr/local/lib
 
 WORKDIR /app
 COPY --from=backend-builder /app/nofx .

@@ -207,3 +207,4 @@ A: 尝试使用较小的模型（如 `paraphrase-multilingual-MiniLM-L12-v2`）�
 ### Q: 如何测试不同模型的效果？
 A: 修改 `.env` 文件中的 `EMBEDDING_MODEL`，然后运行你的脚本，比较结果质量。
 
+
