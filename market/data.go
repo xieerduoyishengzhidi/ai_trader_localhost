@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // ==================== 新增：斐波那契和市场结构相关结构 ====================
@@ -342,11 +345,29 @@ func Get(symbol string) (*Data, error) {
 	// 获取OI数据
 	oiData, err := getOpenInterestData(symbol)
 	if err != nil {
-		oiData = &OIData{Latest: 0, Average: 0}
+		log.Printf("⚠️  获取 %s 持仓量数据失败: %v，使用默认值", symbol, err)
+		oiData = &OIData{
+			Latest:    0,
+			Average:   0,
+			Change15m: 0,
+			Change1h:  0,
+			Change4h:  0,
+			Change1d:  0,
+		}
 	}
 
 	// 获取Funding Rate
-	fundingRate, _ := getFundingRate(symbol)
+	fundingRateData, err := getFundingRate(symbol)
+	if err != nil {
+		log.Printf("⚠️  获取 %s 资金费率失败: %v，使用默认值", symbol, err)
+		fundingRateData = &FundingRateData{
+			Latest:    0.0,
+			Change15m: 0.0,
+			Change1h:  0.0,
+			Change4h:  0.0,
+			Change1d:  0.0,
+		}
+	}
 
 	// 计算长期数据 (基于4小时)
 	longerTermData := calculateLongerTermData(multiTimeframe.Timeframe4h.PriceSeries, multiTimeframe.Timeframe4h.Volume)
@@ -362,10 +383,26 @@ func Get(symbol string) (*Data, error) {
 		}
 	}
 
+	// 计算新增指标（需要在形态识别过滤之前计算 RVol）
+	rvol := calculateRVol(symbol)
+	emaDeviation := calculateEMADeviation(primaryData.CurrentPrice, primaryData.EMA20)
+
+	// 计算PDH/PDL：需要从日线K线数据获取
+	var pdh, pdl float64
+	if multiTimeframe.Timeframe1d != nil {
+		// 重新获取日线K线数据（至少2根）
+		klines1d, err := getKlines(symbol, "1d", 2)
+		if err == nil && len(klines1d) >= 2 {
+			pdh, pdl = calculatePDHPDLFromKlines(klines1d)
+		}
+	}
+
 	// 新增：汇总形态识别结果
 	patternRecognition := aggregatePatterns(multiTimeframe)
 	if patternRecognition != nil {
 		patternRecognition.Symbol = symbol
+		// 应用 RVol 过滤：只有当 RVol > 1.5 时，才保留形态（十字星除外，需要缩量 RVol < 0.5）
+		patternRecognition = filterPatternsByRVol(patternRecognition, rvol)
 	}
 
 	return &Data{
@@ -378,12 +415,16 @@ func Get(symbol string) (*Data, error) {
 		CurrentMACD:        primaryData.MACD,
 		CurrentRSI7:        primaryData.RSI7,
 		OpenInterest:       oiData,
-		FundingRate:        fundingRate,
+		FundingRate:        fundingRateData,
 		MultiTimeframe:     multiTimeframe,
 		LongerTermContext:  longerTermData,
 		MarketStructure:    marketStructure,    // 新增
 		FibLevels:          fibLevels,          // 新增
 		PatternRecognition: patternRecognition, // 新增：形态识别汇总
+		RVol:               rvol,               // 新增：相对成交量
+		EMADeviation:       emaDeviation,       // 新增：EMA偏离度
+		PDH:                pdh,                // 新增：前日高点
+		PDL:                pdl,                // 新增：前日低点
 	}, nil
 }
 
@@ -458,20 +499,27 @@ func calculateTimeframeData(klines []Kline, timeframe string) *TimeframeData {
 	// 新增：形态识别
 	patterns := detectCandlestickPatterns(klines, timeframe)
 
+	// 新增：为每个时间框架计算市场结构
+	var marketStructure *MarketStructure
+	if len(priceSeries) >= 10 {
+		marketStructure = detectMarketStructure(priceSeries)
+	}
+
 	return &TimeframeData{
-		Timeframe:      timeframe,
-		CurrentPrice:   currentPrice,
-		EMA20:          ema20,
-		EMA50:          ema50,
-		MACD:           macd,
-		RSI7:           rsi7,
-		RSI14:          rsi14,
-		ATR14:          atr14,
-		Volume:         volume,
-		PriceSeries:    priceSeries,
-		TrendDirection: trendDirection,
-		SignalStrength: signalStrength,
-		Patterns:       patterns, // 新增：形态识别结果
+		Timeframe:       timeframe,
+		CurrentPrice:    currentPrice,
+		EMA20:           ema20,
+		EMA50:           ema50,
+		MACD:            macd,
+		RSI7:            rsi7,
+		RSI14:           rsi14,
+		ATR14:           atr14,
+		Volume:          volume,
+		PriceSeries:     priceSeries,
+		TrendDirection:  trendDirection,
+		SignalStrength:  signalStrength,
+		Patterns:        patterns,        // 新增：形态识别结果
+		MarketStructure: marketStructure, // 新增：该时间框架的市场结构
 	}
 }
 
@@ -751,16 +799,531 @@ func getKlines(symbol, interval string, limit int) ([]Kline, error) {
 	return klines, nil
 }
 
-// getOpenInterestData 获取Open Interest数据
-func getOpenInterestData(symbol string) (*OIData, error) {
-	// 实现获取OI数据的逻辑
-	return &OIData{Latest: 0, Average: 0}, nil
+// ==================== 资金费率和持仓量缓存 ====================
+var (
+	// 资金费率缓存（当前值）
+	fundingRateCache      = make(map[string]float64)
+	fundingRateMutex      sync.RWMutex
+	fundingRateLastUpdate time.Time
+	fundingRateCacheTTL   = 5 * time.Minute // 缓存5分钟
+
+	// OI 历史数据缓存（按时间框架存储）
+	oiHistoryCache = make(map[string]map[string][]OISnapshot) // symbol -> timeframe -> []snapshot
+	oiHistoryMutex sync.RWMutex
+
+	// 资金费率历史数据缓存（按时间框架存储）
+	fundingRateHistoryCache = make(map[string]map[string][]FundingRateSnapshot) // symbol -> timeframe -> []snapshot
+	fundingRateHistoryMutex sync.RWMutex
+)
+
+// OISnapshot OI 快照数据
+type OISnapshot struct {
+	Value     float64
+	Timestamp time.Time
 }
 
-// getFundingRate 获取Funding Rate
-func getFundingRate(symbol string) (float64, error) {
-	// 实现获取Funding Rate的逻辑
-	return 0.0, nil
+// FundingRateSnapshot 资金费率快照数据
+type FundingRateSnapshot struct {
+	Value     float64
+	Timestamp time.Time
+}
+
+// PremiumIndexResponse Binance premiumIndex API 响应结构
+type PremiumIndexResponse struct {
+	Symbol               string `json:"symbol"`
+	MarkPrice            string `json:"markPrice"`
+	IndexPrice           string `json:"indexPrice"`
+	EstimatedSettlePrice string `json:"estimatedSettlePrice"`
+	LastFundingRate      string `json:"lastFundingRate"`
+	NextFundingTime      int64  `json:"nextFundingTime"`
+	InterestRate         string `json:"interestRate"`
+	Time                 int64  `json:"time"`
+}
+
+// OpenInterestResponse Binance openInterest API 响应结构
+type OpenInterestResponse struct {
+	OpenInterest string `json:"openInterest"`
+	Symbol       string `json:"symbol"`
+}
+
+// fetchAllFundingRates 一次性获取所有币种的资金费率
+func fetchAllFundingRates() (map[string]float64, error) {
+	url := "https://fapi.binance.com/fapi/v1/premiumIndex"
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("请求资金费率API失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取资金费率响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("资金费率API返回错误 (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var premiumIndexes []PremiumIndexResponse
+	if err := json.Unmarshal(body, &premiumIndexes); err != nil {
+		return nil, fmt.Errorf("解析资金费率JSON失败: %w", err)
+	}
+
+	result := make(map[string]float64)
+	for _, item := range premiumIndexes {
+		if item.LastFundingRate != "" {
+			rate, err := strconv.ParseFloat(item.LastFundingRate, 64)
+			if err == nil {
+				result[item.Symbol] = rate
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// getFundingRate 获取Funding Rate（返回完整数据，包含变化率）
+func getFundingRate(symbol string) (*FundingRateData, error) {
+	// 标准化symbol
+	symbol = Normalize(symbol)
+
+	// 检查缓存是否需要更新
+	fundingRateMutex.RLock()
+	needsUpdate := time.Since(fundingRateLastUpdate) > fundingRateCacheTTL
+	fundingRateMutex.RUnlock()
+
+	if needsUpdate {
+		// 更新缓存
+		fundingRateMutex.Lock()
+		// 双重检查，避免并发重复请求
+		if time.Since(fundingRateLastUpdate) > fundingRateCacheTTL {
+			rates, err := fetchAllFundingRates()
+			if err != nil {
+				fundingRateMutex.Unlock()
+				// 如果更新失败，尝试使用旧缓存
+				fundingRateMutex.RLock()
+				rate, ok := fundingRateCache[symbol]
+				fundingRateMutex.RUnlock()
+				if ok {
+					// 使用旧缓存计算变化率
+					now := time.Now()
+					updateFundingRateCache(symbol, rate, now)
+					change15m, change1h, change4h, change1d := calculateFundingRateChanges(symbol, rate, now)
+					return &FundingRateData{
+						Latest:    rate,
+						Change15m: change15m,
+						Change1h:  change1h,
+						Change4h:  change4h,
+						Change1d:  change1d,
+					}, nil
+				}
+				return nil, err
+			}
+			fundingRateCache = rates
+			fundingRateLastUpdate = time.Now()
+		}
+		fundingRateMutex.Unlock()
+	}
+
+	// 从缓存读取
+	fundingRateMutex.RLock()
+	rate, ok := fundingRateCache[symbol]
+	fundingRateMutex.RUnlock()
+
+	if !ok {
+		// 如果缓存中没有，尝试更新一次
+		rates, err := fetchAllFundingRates()
+		if err != nil {
+			return nil, fmt.Errorf("获取资金费率失败: %w", err)
+		}
+		fundingRateMutex.Lock()
+		fundingRateCache = rates
+		fundingRateLastUpdate = time.Now()
+		rate, ok = rates[symbol]
+		fundingRateMutex.Unlock()
+
+		if !ok {
+			return nil, fmt.Errorf("未找到币种 %s 的资金费率", symbol)
+		}
+	}
+
+	// 更新缓存并计算变化率
+	now := time.Now()
+	updateFundingRateCache(symbol, rate, now)
+	change15m, change1h, change4h, change1d := calculateFundingRateChanges(symbol, rate, now)
+
+	return &FundingRateData{
+		Latest:    rate,
+		Change15m: change15m,
+		Change1h:  change1h,
+		Change4h:  change4h,
+		Change1d:  change1d,
+	}, nil
+}
+
+// getOpenInterestData 获取Open Interest数据（包含变化率）
+func getOpenInterestData(symbol string) (*OIData, error) {
+	// 标准化symbol
+	symbol = Normalize(symbol)
+
+	// 获取当前持仓量
+	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/openInterest?symbol=%s", symbol)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("请求持仓量API失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取持仓量响应失败: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("持仓量API返回错误 (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var oiResponse OpenInterestResponse
+	if err := json.Unmarshal(body, &oiResponse); err != nil {
+		return nil, fmt.Errorf("解析持仓量JSON失败: %w", err)
+	}
+
+	latest, err := strconv.ParseFloat(oiResponse.OpenInterest, 64)
+	if err != nil {
+		return nil, fmt.Errorf("解析持仓量数值失败: %w", err)
+	}
+
+	// 获取历史持仓量数据来计算平均值
+	// 使用 openInterestHist API 获取最近30个数据点（5分钟间隔，约2.5小时的数据）
+	histURL := fmt.Sprintf("https://fapi.binance.com/fapi/v1/openInterestHist?symbol=%s&period=5m&limit=30", symbol)
+	histResp, err := http.Get(histURL)
+
+	var average float64 = latest // 默认使用当前值
+
+	if err == nil {
+		defer histResp.Body.Close()
+		histBody, err := ioutil.ReadAll(histResp.Body)
+		if err == nil && histResp.StatusCode == http.StatusOK {
+			var histData []struct {
+				Symbol               string `json:"symbol"`
+				SumOpenInterest      string `json:"sumOpenInterest"`
+				SumOpenInterestValue string `json:"sumOpenInterestValue"`
+				Timestamp            int64  `json:"timestamp"`
+			}
+			if err := json.Unmarshal(histBody, &histData); err == nil && len(histData) > 0 {
+				// 计算平均值
+				sum := 0.0
+				count := 0
+				for _, item := range histData {
+					if val, err := strconv.ParseFloat(item.SumOpenInterest, 64); err == nil {
+						sum += val
+						count++
+					}
+				}
+				if count > 0 {
+					average = sum / float64(count)
+				}
+			}
+		}
+	}
+
+	// 更新缓存并计算变化率
+	now := time.Now()
+	updateOICache(symbol, latest, now)
+	change15m, change1h, change4h, change1d := calculateOIChanges(symbol, latest, now)
+
+	return &OIData{
+		Latest:    latest,
+		Average:   average,
+		Change15m: change15m,
+		Change1h:  change1h,
+		Change4h:  change4h,
+		Change1d:  change1d,
+	}, nil
+}
+
+// updateOICache 更新 OI 缓存
+func updateOICache(symbol string, value float64, timestamp time.Time) {
+	oiHistoryMutex.Lock()
+	defer oiHistoryMutex.Unlock()
+
+	if oiHistoryCache[symbol] == nil {
+		oiHistoryCache[symbol] = make(map[string][]OISnapshot)
+	}
+
+	timeframes := []string{"15m", "1h", "4h", "1d"}
+	for _, tf := range timeframes {
+		if oiHistoryCache[symbol][tf] == nil {
+			oiHistoryCache[symbol][tf] = make([]OISnapshot, 0)
+		}
+
+		// 添加新快照
+		snapshot := OISnapshot{
+			Value:     value,
+			Timestamp: timestamp,
+		}
+		oiHistoryCache[symbol][tf] = append(oiHistoryCache[symbol][tf], snapshot)
+
+		// 清理过期数据（保留足够的历史数据）
+		cutoffTime := timestamp
+		switch tf {
+		case "15m":
+			cutoffTime = timestamp.Add(-2 * time.Hour) // 保留2小时数据
+		case "1h":
+			cutoffTime = timestamp.Add(-48 * time.Hour) // 保留48小时数据
+		case "4h":
+			cutoffTime = timestamp.Add(-7 * 24 * time.Hour) // 保留7天数据
+		case "1d":
+			cutoffTime = timestamp.Add(-30 * 24 * time.Hour) // 保留30天数据
+		}
+
+		// 过滤过期数据
+		filtered := make([]OISnapshot, 0)
+		for _, s := range oiHistoryCache[symbol][tf] {
+			if s.Timestamp.After(cutoffTime) {
+				filtered = append(filtered, s)
+			}
+		}
+		oiHistoryCache[symbol][tf] = filtered
+	}
+}
+
+// calculateOIChanges 计算 OI 变化率
+func calculateOIChanges(symbol string, currentValue float64, currentTime time.Time) (change15m, change1h, change4h, change1d float64) {
+	oiHistoryMutex.RLock()
+	defer oiHistoryMutex.RUnlock()
+
+	if oiHistoryCache[symbol] == nil {
+		return 0, 0, 0, 0
+	}
+
+	// 计算各时间框架的变化率
+	timeframes := map[string]*float64{
+		"15m": &change15m,
+		"1h":  &change1h,
+		"4h":  &change4h,
+		"1d":  &change1d,
+	}
+
+	timeDeltas := map[string]time.Duration{
+		"15m": 15 * time.Minute,
+		"1h":  1 * time.Hour,
+		"4h":  4 * time.Hour,
+		"1d":  24 * time.Hour,
+	}
+
+	for tf, result := range timeframes {
+		history := oiHistoryCache[symbol][tf]
+		if history == nil || len(history) == 0 {
+			continue
+		}
+
+		// 找到对应时间点的历史值
+		targetTime := currentTime.Add(-timeDeltas[tf])
+		var prevValue float64
+		var found bool
+
+		// 从后往前查找最接近目标时间的快照
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Timestamp.Before(targetTime) || history[i].Timestamp.Equal(targetTime) {
+				prevValue = history[i].Value
+				found = true
+				break
+			}
+		}
+
+		// 如果没找到精确匹配，使用最早的数据
+		if !found && len(history) > 0 {
+			prevValue = history[0].Value
+			found = true
+		}
+
+		if found && prevValue > 0 {
+			*result = ((currentValue - prevValue) / prevValue) * 100
+		}
+	}
+
+	return change15m, change1h, change4h, change1d
+}
+
+// updateFundingRateCache 更新资金费率缓存
+func updateFundingRateCache(symbol string, value float64, timestamp time.Time) {
+	fundingRateHistoryMutex.Lock()
+	defer fundingRateHistoryMutex.Unlock()
+
+	if fundingRateHistoryCache[symbol] == nil {
+		fundingRateHistoryCache[symbol] = make(map[string][]FundingRateSnapshot)
+	}
+
+	timeframes := []string{"15m", "1h", "4h", "1d"}
+	for _, tf := range timeframes {
+		if fundingRateHistoryCache[symbol][tf] == nil {
+			fundingRateHistoryCache[symbol][tf] = make([]FundingRateSnapshot, 0)
+		}
+
+		// 添加新快照
+		snapshot := FundingRateSnapshot{
+			Value:     value,
+			Timestamp: timestamp,
+		}
+		fundingRateHistoryCache[symbol][tf] = append(fundingRateHistoryCache[symbol][tf], snapshot)
+
+		// 清理过期数据
+		cutoffTime := timestamp
+		switch tf {
+		case "15m":
+			cutoffTime = timestamp.Add(-2 * time.Hour)
+		case "1h":
+			cutoffTime = timestamp.Add(-48 * time.Hour)
+		case "4h":
+			cutoffTime = timestamp.Add(-7 * 24 * time.Hour)
+		case "1d":
+			cutoffTime = timestamp.Add(-30 * 24 * time.Hour)
+		}
+
+		filtered := make([]FundingRateSnapshot, 0)
+		for _, s := range fundingRateHistoryCache[symbol][tf] {
+			if s.Timestamp.After(cutoffTime) {
+				filtered = append(filtered, s)
+			}
+		}
+		fundingRateHistoryCache[symbol][tf] = filtered
+	}
+}
+
+// calculateFundingRateChanges 计算资金费率变化率
+func calculateFundingRateChanges(symbol string, currentValue float64, currentTime time.Time) (change15m, change1h, change4h, change1d float64) {
+	fundingRateHistoryMutex.RLock()
+	defer fundingRateHistoryMutex.RUnlock()
+
+	if fundingRateHistoryCache[symbol] == nil {
+		return 0, 0, 0, 0
+	}
+
+	timeframes := map[string]*float64{
+		"15m": &change15m,
+		"1h":  &change1h,
+		"4h":  &change4h,
+		"1d":  &change1d,
+	}
+
+	timeDeltas := map[string]time.Duration{
+		"15m": 15 * time.Minute,
+		"1h":  1 * time.Hour,
+		"4h":  4 * time.Hour,
+		"1d":  24 * time.Hour,
+	}
+
+	for tf, result := range timeframes {
+		history := fundingRateHistoryCache[symbol][tf]
+		if history == nil || len(history) == 0 {
+			continue
+		}
+
+		targetTime := currentTime.Add(-timeDeltas[tf])
+		var prevValue float64
+		var found bool
+
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Timestamp.Before(targetTime) || history[i].Timestamp.Equal(targetTime) {
+				prevValue = history[i].Value
+				found = true
+				break
+			}
+		}
+
+		if !found && len(history) > 0 {
+			prevValue = history[0].Value
+			found = true
+		}
+
+		if found {
+			// 资金费率变化率：直接计算差值（因为费率可能是负数）
+			*result = (currentValue - prevValue) * 10000 // 转换为基点（basis points）
+		}
+	}
+
+	return change15m, change1h, change4h, change1d
+}
+
+// calculateRVol 计算相对成交量：当前K线成交量 / 过去20根K线平均成交量
+func calculateRVol(symbol string) float64 {
+	// 获取15分钟K线数据（至少21根，用于计算20根的平均值）
+	klines, err := getKlines(symbol, "15m", 21)
+	if err != nil || len(klines) < 21 {
+		return 0.0
+	}
+
+	// 当前K线成交量
+	currentVol := klines[len(klines)-1].Volume
+
+	// 计算过去20根K线的平均成交量（不包含当前根）
+	sum := 0.0
+	for i := len(klines) - 21; i < len(klines)-1; i++ {
+		sum += klines[i].Volume
+	}
+	avgVol := sum / 20.0
+
+	if avgVol == 0 {
+		return 0.0
+	}
+
+	return currentVol / avgVol
+}
+
+// calculateEMADeviation 计算EMA偏离度：(当前价格 - EMA20) / EMA20 * 100
+func calculateEMADeviation(currentPrice, ema20 float64) float64 {
+	if ema20 == 0 {
+		return 0.0
+	}
+	return ((currentPrice - ema20) / ema20) * 100
+}
+
+// calculatePDHPDLFromKlines 从日线K线数据计算前日高低点
+func calculatePDHPDLFromKlines(klines []Kline) (float64, float64) {
+	if len(klines) < 2 {
+		return 0.0, 0.0
+	}
+
+	// 倒数第二根K线是昨天（-1是今天，-2是昨天）
+	prevDay := klines[len(klines)-2]
+	return prevDay.High, prevDay.Low
+}
+
+// filterPatternsByRVol 根据 RVol 过滤形态
+// 规则：只有当 RVol > 1.5 时，才保留形态（十字星除外，需要缩量 RVol < 0.5）
+func filterPatternsByRVol(patternRecognition *PatternRecognition, rvol float64) *PatternRecognition {
+	if patternRecognition == nil || len(patternRecognition.Patterns) == 0 {
+		return patternRecognition
+	}
+
+	filteredPatterns := []CandlestickPattern{}
+	for _, pattern := range patternRecognition.Patterns {
+		// 十字星（CDLDOJI）需要缩量确认（RVol < 0.5）
+		if pattern.Name == "CDLDOJI" {
+			if rvol < 0.5 {
+				filteredPatterns = append(filteredPatterns, pattern)
+			}
+		} else {
+			// 其他形态需要放量确认（RVol > 1.5）
+			if rvol > 1.5 {
+				filteredPatterns = append(filteredPatterns, pattern)
+			}
+		}
+	}
+
+	// 如果没有形态通过过滤，返回 nil
+	if len(filteredPatterns) == 0 {
+		return nil
+	}
+
+	return &PatternRecognition{
+		Symbol:    patternRecognition.Symbol,
+		Patterns:  filteredPatterns,
+		Timestamp: patternRecognition.Timestamp,
+	}
 }
 
 // Format 格式化市场数据输出
@@ -785,36 +1348,92 @@ func Format(data *Data) string {
 
 		// 15分钟框架
 		if tf15 := data.MultiTimeframe.Timeframe15m; tf15 != nil {
-			sb.WriteString(fmt.Sprintf("   • 15m: %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n",
+			sb.WriteString(fmt.Sprintf("   • 15m: %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f",
 				tf15.TrendDirection, tf15.SignalStrength, tf15.EMA20, tf15.MACD, tf15.RSI7))
+			if tf15.MarketStructure != nil {
+				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d/低点%d)",
+					tf15.MarketStructure.CurrentBias,
+					len(tf15.MarketStructure.SwingHighs),
+					len(tf15.MarketStructure.SwingLows)))
+			}
+			sb.WriteString("\n")
 		}
 
 		// 1小时框架
 		if tf1h := data.MultiTimeframe.Timeframe1h; tf1h != nil {
-			sb.WriteString(fmt.Sprintf("   • 1h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n",
+			sb.WriteString(fmt.Sprintf("   • 1h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f",
 				tf1h.TrendDirection, tf1h.SignalStrength, tf1h.EMA20, tf1h.MACD, tf1h.RSI7))
+			if tf1h.MarketStructure != nil {
+				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d/低点%d)",
+					tf1h.MarketStructure.CurrentBias,
+					len(tf1h.MarketStructure.SwingHighs),
+					len(tf1h.MarketStructure.SwingLows)))
+			}
+			sb.WriteString("\n")
 		}
 
 		// 4小时框架
 		if tf4h := data.MultiTimeframe.Timeframe4h; tf4h != nil {
-			sb.WriteString(fmt.Sprintf("   • 4h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n",
+			sb.WriteString(fmt.Sprintf("   • 4h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f",
 				tf4h.TrendDirection, tf4h.SignalStrength, tf4h.EMA20, tf4h.MACD, tf4h.RSI7))
+			if tf4h.MarketStructure != nil {
+				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d/低点%d)",
+					tf4h.MarketStructure.CurrentBias,
+					len(tf4h.MarketStructure.SwingHighs),
+					len(tf4h.MarketStructure.SwingLows)))
+			}
+			sb.WriteString("\n")
 		}
 
 		// 日线框架
 		if tf1d := data.MultiTimeframe.Timeframe1d; tf1d != nil {
-			sb.WriteString(fmt.Sprintf("   • 1d:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f\n",
+			sb.WriteString(fmt.Sprintf("   • 1d:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f",
 				tf1d.TrendDirection, tf1d.SignalStrength, tf1d.EMA20, tf1d.MACD, tf1d.RSI7))
+			if tf1d.MarketStructure != nil {
+				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d/低点%d)",
+					tf1d.MarketStructure.CurrentBias,
+					len(tf1d.MarketStructure.SwingHighs),
+					len(tf1d.MarketStructure.SwingLows)))
+			}
+			sb.WriteString("\n")
 		}
 	}
 
 	// 资金数据
 	if data.OpenInterest != nil {
-		sb.WriteString(fmt.Sprintf("📈 持仓量: %.0f | 平均: %.0f\n",
-			data.OpenInterest.Latest, data.OpenInterest.Average))
+		sb.WriteString(fmt.Sprintf("📈 持仓量: %.0f | 平均: %.0f", data.OpenInterest.Latest, data.OpenInterest.Average))
+		if data.OpenInterest.Change15m != 0 || data.OpenInterest.Change1h != 0 || data.OpenInterest.Change4h != 0 || data.OpenInterest.Change1d != 0 {
+			sb.WriteString(" | 变化率: ")
+			if data.OpenInterest.Change15m != 0 {
+				sb.WriteString(fmt.Sprintf("15m:%+.2f%% ", data.OpenInterest.Change15m))
+			}
+			if data.OpenInterest.Change1h != 0 {
+				sb.WriteString(fmt.Sprintf("1h:%+.2f%% ", data.OpenInterest.Change1h))
+			}
+			if data.OpenInterest.Change4h != 0 {
+				sb.WriteString(fmt.Sprintf("4h:%+.2f%% ", data.OpenInterest.Change4h))
+			}
+			if data.OpenInterest.Change1d != 0 {
+				sb.WriteString(fmt.Sprintf("1d:%+.2f%%", data.OpenInterest.Change1d))
+			}
+		}
+		sb.WriteString("\n")
 	}
 
-	sb.WriteString(fmt.Sprintf("💸 资金费率: %.4f%%\n", data.FundingRate*100))
+	// 新增指标
+	if data.RVol > 0 {
+		sb.WriteString(fmt.Sprintf("📊 相对成交量(RVol): %.2fx (当前/20均量)\n", data.RVol))
+	}
+	if data.EMADeviation != 0 {
+		sb.WriteString(fmt.Sprintf("📈 EMA偏离度: %+.2f%% (价格相对EMA20)\n", data.EMADeviation))
+	}
+	if data.PDH > 0 && data.PDL > 0 {
+		// 计算当前价格距离PDH/PDL的距离
+		distToPDH := ((data.CurrentPrice - data.PDH) / data.PDH) * 100
+		distToPDL := ((data.CurrentPrice - data.PDL) / data.PDL) * 100
+		sb.WriteString(fmt.Sprintf("🎯 关键流动性: PDH=%.4f (%+.2f%%) | PDL=%.4f (%+.2f%%)\n",
+			data.PDH, distToPDH, data.PDL, distToPDL))
+	}
 
 	// 长期数据
 	if data.LongerTermContext != nil {
@@ -857,9 +1476,10 @@ func Format(data *Data) string {
 	sb.WriteString(fmt.Sprintf("   • EMA斜率: %.4f%% | 价格通道: %.2f%% | ATR比率: %.2f%%\n",
 		marketCondition.EMASlope, marketCondition.PriceChannel, marketCondition.ATRRatio))
 
-	// ==================== 新增：市场结构和斐波那契信息 ====================
+	// ==================== 新增：市场结构和斐波那契信息（日线）====================
+	// 显示日线的市场结构（用于大周期分析）
 	if data.MarketStructure != nil {
-		sb.WriteString("🏗️ 市场结构:\n")
+		sb.WriteString("🏗️ 市场结构（日线）:\n")
 		sb.WriteString(fmt.Sprintf("   • 偏向: %s | 波段高点: %d | 波段低点: %d\n",
 			data.MarketStructure.CurrentBias,
 			len(data.MarketStructure.SwingHighs),
@@ -1010,85 +1630,48 @@ func GetSignalStrength(data *Data) int {
 	return 0
 }
 
-// IsStrongSignal 判断是否为强信号
+// IsStrongSignal 判断是否为强信号 (修改版：支持做空)
 func IsStrongSignal(data *Data) bool {
 	signalStrength := GetSignalStrength(data)
 	trendSummary := GetTrendSummary(data)
 
-	// 强信号标准：信号强度>70且趋势明确
-	return signalStrength > 55 && (trendSummary == "📈 多头趋势" || trendSummary == "📉 空头趋势")
+	// 多头逻辑：分数高 (>=55) 且 趋势向上
+	isBullish := signalStrength >= 55 && trendSummary == "📈 多头趋势"
+
+	// 空头逻辑：分数低 (<=45) 且 趋势向下
+	// 注意：之前你的日志里全是 15分，这不仅合格，而且是满分空头信号
+	isBearish := signalStrength <= 45 && trendSummary == "📉 空头趋势"
+
+	return isBullish || isBearish
 }
 
-// GetSignalStrengthReason 获取信号强度不足的详细理由
+// GetSignalStrengthReason 获取详细理由 (修改版：适配做空)
 func GetSignalStrengthReason(data *Data) string {
 	if data == nil || data.MultiTimeframe == nil {
-		return "数据不足，无法计算信号强度"
+		return "数据不足"
 	}
 
 	signalStrength := GetSignalStrength(data)
 	trendSummary := GetTrendSummary(data)
-
 	var reasons []string
 
-	// 修改点 1：把日志报错门槛也降到 55，保持一致
-	if signalStrength < 55 {
-		reasons = append(reasons, fmt.Sprintf("综合信号强度%d(要求>=55)", signalStrength))
+	// 修改点：只有在 46-54 这种不上不下的尴尬位置，才提示强度不足
+	// < 45 是强空头，> 55 是强多头，都不算"不足"
+	if signalStrength > 45 && signalStrength < 55 {
+		reasons = append(reasons, fmt.Sprintf("综合信号中性%d(需>55做多或<45做空)", signalStrength))
 	}
 
-	// 检查趋势明确性
+	// 检查趋势是否明确
 	if trendSummary != "📈 多头趋势" && trendSummary != "📉 空头趋势" {
 		reasons = append(reasons, fmt.Sprintf("趋势不明确(%s)", trendSummary))
 	}
 
-	// 详细分析各时间框架的信号强度
-	timeframes := []struct {
-		name string
-		tf   *TimeframeData
-	}{
-		{"15m", data.MultiTimeframe.Timeframe15m},
-		{"1h", data.MultiTimeframe.Timeframe1h},
-		{"4h", data.MultiTimeframe.Timeframe4h},
-		{"1d", data.MultiTimeframe.Timeframe1d},
-	}
-
-	var weakTimeframes []string
-	for _, tf := range timeframes {
-		if tf.tf != nil {
-			strength := tf.tf.SignalStrength
-
-			var tfReasons []string
-
-			// 修改点 2：删除 MACD 绝对值 0.001 的检查
-			// 只有当 MACD 几乎完全为 0 时才提示微弱，否则不提示
-			if math.Abs(tf.tf.MACD) == 0 {
-				tfReasons = append(tfReasons, "MACD无信号")
-			}
-
-			// 修改点 3：RSI 提示范围缩小
-			// 只有 RSI 真的卡在中间 (45-55) 才提示中性，不然 40-60 都是可交易区间
-			if tf.tf.RSI7 >= 45 && tf.tf.RSI7 <= 55 {
-				tfReasons = append(tfReasons, "RSI无方向")
-			}
-
-			// 只有分数很低才记录
-			if strength < 50 {
-				reasonStr := fmt.Sprintf("%s强度%d", tf.name, strength)
-				if len(tfReasons) > 0 {
-					reasonStr += "(" + strings.Join(tfReasons, ",") + ")"
-				}
-				weakTimeframes = append(weakTimeframes, reasonStr)
-			}
-		}
-	}
-
-	if len(weakTimeframes) > 0 {
-		reasons = append(reasons, fmt.Sprintf("弱势周期:%s", strings.Join(weakTimeframes, ";")))
-	}
-
+	// 如果没有理由，说明符合要求（无论是多还是空）
 	if len(reasons) == 0 {
 		return fmt.Sprintf("信号强度%d，趋势%s", signalStrength, trendSummary)
 	}
 
+	// 这里简化了日志输出，只报大错误，不报细节，免得日志太乱
 	return strings.Join(reasons, " | ")
 }
 
@@ -1111,7 +1694,7 @@ func GetRiskLevel(data *Data) string {
 	}
 }
 
-// GetTradingRecommendation 获取交易建议
+// GetTradingRecommendation 获取交易建议 (修改版：适配做空)
 func GetTradingRecommendation(data *Data) string {
 	if data == nil {
 		return "观望"
@@ -1121,8 +1704,12 @@ func GetTradingRecommendation(data *Data) string {
 	signalStrength := GetSignalStrength(data)
 	riskLevel := GetRiskLevel(data)
 
-	if signalStrength < 60 {
-		return "观望"
+	// 修改点：删除原本 "if signalStrength < 60 { return 观望 }" 的代码
+	// 因为做空的时候分数肯定小于 60
+
+	// 震荡市处理
+	if signalStrength > 45 && signalStrength < 55 {
+		return "观望(信号中性)"
 	}
 
 	switch trend {
@@ -1131,20 +1718,17 @@ func GetTradingRecommendation(data *Data) string {
 			return "考虑做多"
 		} else if riskLevel == "🟡 中风险" {
 			return "谨慎做多"
-		} else {
-			return "观望"
 		}
 	case "📉 空头趋势":
-		if riskLevel == "🟢 低风险" {
+		// 新增空头建议逻辑
+		if riskLevel == "🟢 低风险" { // 注意：这里的低风险指RSI没有超卖(<20)
 			return "考虑做空"
 		} else if riskLevel == "🟡 中风险" {
 			return "谨慎做空"
-		} else {
-			return "观望"
 		}
-	default:
-		return "观望"
 	}
+
+	return "观望"
 }
 
 // GetPriceTargets 获取价格目标

@@ -1,14 +1,22 @@
 package trader
 
 import (
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"nofx/decision"
 	"nofx/logger"
 	"nofx/market"
 	"nofx/mcp"
 	"nofx/pool"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -428,12 +436,231 @@ func (at *AutoTrader) runCycle() error {
 		record.Decisions = append(record.Decisions, actionRecord)
 	}
 
-	// 9. 保存决策记录
+	// 9. 保存决策记录（初始保存，不含成交数据）
 	if err := at.decisionLogger.LogDecision(record); err != nil {
 		log.Printf("⚠ 保存决策记录失败: %v", err)
 	}
 
+	// 10. 异步检测成交并更新记录（仅对成功的open/close操作）
+	go at.checkAndUpdateTrades(record)
+
 	return nil
+}
+
+// checkAndUpdateTrades 检测订单成交并更新决策记录
+func (at *AutoTrader) checkAndUpdateTrades(record *logger.DecisionRecord) {
+	// 只检测币安交易所的订单
+	if at.exchange != "binance" {
+		return
+	}
+
+	// 获取API配置
+	apiKey := at.config.BinanceAPIKey
+	secretKey := at.config.BinanceSecretKey
+	baseURL := "https://fapi.binance.com"
+	if at.config.BinanceTestnet {
+		baseURL = "https://testnet.binancefuture.com"
+	}
+
+	// 检测每个决策动作的成交情况
+	hasUpdates := false
+	for i := range record.Decisions {
+		action := &record.Decisions[i]
+		
+		// 只检测成功的open/close操作，且订单ID有效
+		if !action.Success || action.OrderID == 0 {
+			continue
+		}
+		
+		isOpenOrClose := action.Action == "open_long" || action.Action == "open_short" ||
+			action.Action == "close_long" || action.Action == "close_short"
+		if !isOpenOrClose {
+			continue
+		}
+
+		// 如果已经检测过，跳过
+		if action.TradeChecked {
+			continue
+		}
+
+		// 定期检测成交（最多检测30秒，每3秒检测一次）
+		maxAttempts := 10
+		checkInterval := 3 * time.Second
+		
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			// 调用工具函数获取成交记录
+			trades, err := at.getOrderTradesFromAPI(baseURL, apiKey, secretKey, action.Symbol, action.OrderID)
+			if err != nil {
+				log.Printf("⚠️  检测订单 %d 成交失败: %v", action.OrderID, err)
+				time.Sleep(checkInterval)
+				continue
+			}
+
+			if len(trades) > 0 {
+				// 找到成交记录，更新到决策动作中
+				action.TradeDetails = trades
+				action.TradeChecked = true
+				hasUpdates = true
+				log.Printf("✓ 订单 %d (%s %s) 已成交，找到 %d 条成交记录",
+					action.OrderID, action.Symbol, action.Action, len(trades))
+				break
+			}
+
+			// 未找到成交记录，等待后重试
+			if attempt < maxAttempts-1 {
+				time.Sleep(checkInterval)
+			}
+		}
+
+		// 如果检测超时仍未找到成交记录，标记为已检测（可能订单还未成交或已取消）
+		if !action.TradeChecked {
+			action.TradeChecked = true
+			hasUpdates = true
+			log.Printf("⚠️  订单 %d (%s %s) 检测超时，未找到成交记录",
+				action.OrderID, action.Symbol, action.Action)
+		}
+	}
+
+	// 如果有更新，保存到文件
+	if hasUpdates {
+		if err := at.decisionLogger.UpdateDecisionWithTrades(record); err != nil {
+			log.Printf("⚠️  更新决策记录失败: %v", err)
+		} else {
+			log.Printf("📝 决策记录已更新成交数据")
+		}
+	}
+}
+
+// getOrderTradesFromAPI 从币安API获取订单成交记录
+func (at *AutoTrader) getOrderTradesFromAPI(baseURL, apiKey, secretKey, symbol string, orderID int64) ([]logger.TradeDetail, error) {
+	// 这里需要调用tools中的函数，但由于包结构限制，我们直接实现
+	// 或者可以通过HTTP调用独立的工具程序
+	
+	// 简化实现：直接使用HTTP请求
+	ctx := context.Background()
+	var allTrades []logger.TradeDetail
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+
+	// 查询最近1小时的交易记录
+	startTime := time.Now().Add(-1 * time.Hour).UnixMilli()
+	endTime := time.Now().UnixMilli()
+	fromID := int64(0)
+	limit := 100
+
+	for {
+		params := url.Values{}
+		params.Set("symbol", symbol)
+		params.Set("limit", strconv.Itoa(limit))
+		params.Set("startTime", strconv.FormatInt(startTime, 10))
+		params.Set("endTime", strconv.FormatInt(endTime, 10))
+
+		if fromID > 0 {
+			params.Set("fromId", strconv.FormatInt(fromID, 10))
+		}
+
+		timestamp := time.Now().UnixMilli()
+		params.Set("timestamp", strconv.FormatInt(timestamp, 10))
+
+		queryString := params.Encode()
+		signature := at.generateSignature(queryString, secretKey)
+
+		requestURL := fmt.Sprintf("%s/fapi/v1/userTrades?%s&signature=%s", baseURL, queryString, signature)
+
+		req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("创建请求失败: %w", err)
+		}
+
+		req.Header.Set("X-MBX-APIKEY", apiKey)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("请求失败: %w", err)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("读取响应失败: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("API返回错误: %s", resp.Status)
+		}
+
+		var trades []map[string]interface{}
+		if err := json.Unmarshal(body, &trades); err != nil {
+			return nil, fmt.Errorf("解析JSON失败: %w", err)
+		}
+
+		if len(trades) == 0 {
+			break
+		}
+
+		// 筛选出匹配订单ID的成交记录
+		for _, trade := range trades {
+			if tradeOrderID, ok := trade["orderId"].(float64); ok && int64(tradeOrderID) == orderID {
+				detail := at.parseTradeDetail(trade)
+				allTrades = append(allTrades, detail)
+			}
+		}
+
+		if len(trades) < limit {
+			break
+		}
+
+		if lastID, ok := trades[len(trades)-1]["id"].(float64); ok {
+			fromID = int64(lastID) + 1
+		} else {
+			break
+		}
+
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	return allTrades, nil
+}
+
+// generateSignature 生成HMAC SHA256签名
+func (at *AutoTrader) generateSignature(queryString, secretKey string) string {
+	mac := hmac.New(sha256.New, []byte(secretKey))
+	mac.Write([]byte(queryString))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// parseTradeDetail 解析成交记录
+func (at *AutoTrader) parseTradeDetail(trade map[string]interface{}) logger.TradeDetail {
+	detail := logger.TradeDetail{}
+
+	if v, ok := trade["id"].(float64); ok {
+		detail.TradeID = int64(v)
+	}
+	if v, ok := trade["price"].(string); ok {
+		detail.Price, _ = strconv.ParseFloat(v, 64)
+	}
+	if v, ok := trade["qty"].(string); ok {
+		detail.Quantity, _ = strconv.ParseFloat(v, 64)
+	}
+	if v, ok := trade["quoteQty"].(string); ok {
+		detail.QuoteQuantity, _ = strconv.ParseFloat(v, 64)
+	}
+	if v, ok := trade["commission"].(string); ok {
+		detail.Commission, _ = strconv.ParseFloat(v, 64)
+	}
+	if v, ok := trade["commissionAsset"].(string); ok {
+		detail.CommissionAsset = v
+	}
+	if v, ok := trade["time"].(float64); ok {
+		detail.Time = int64(v)
+	}
+	if v, ok := trade["buyer"].(bool); ok {
+		detail.IsBuyer = v
+	}
+	if v, ok := trade["maker"].(bool); ok {
+		detail.IsMaker = v
+	}
+
+	return detail
 }
 
 // buildTradingContext 构建交易上下文

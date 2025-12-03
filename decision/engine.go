@@ -110,7 +110,9 @@ func GetFullDecision(ctx *Context, mcpClient *mcp.Client) (*FullDecision, error)
 
 	// 3. 构建 System Prompt（固定规则）和 User Prompt（动态数据）
 	systemPrompt := buildSystemPrompt(ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
-	userPrompt := buildUserPrompt(ctx)
+	// 使用默认数据配置
+	dataConfig := market.GetPromptDataConfig("default")
+	userPrompt := buildUserPrompt(ctx, dataConfig)
 
 	// 4. 如果候选币种为0且无持仓，跳过AI调用，直接返回符合格式的空决策
 	if candidateCount == 0 && len(ctx.Positions) == 0 {
@@ -196,7 +198,9 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient *mcp.Client, custom
 	// 4. 构建 User Prompt（动态数据）
 	// 从systemPromptTemplate提取交易员名称用于RAG检索
 	traderName := ExtractTraderNameFromPrompt(systemPromptTemplate)
-	userPrompt := buildUserPromptWithRAG(ctx, traderName)
+	// 根据交易员名称和prompt模板获取数据配置
+	dataConfig := market.GetDataConfigByTraderName(traderName, systemPromptTemplate)
+	userPrompt := buildUserPromptWithRAG(ctx, traderName, dataConfig)
 
 	// 5. 如果候选币种为0且无持仓，跳过AI调用，直接返回符合格式的空决策
 	if candidateCount == 0 && len(ctx.Positions) == 0 {
@@ -261,6 +265,9 @@ func fetchMarketDataForContext(ctx *Context) error {
 		symbolSet[coin.Symbol] = true
 	}
 
+	// 3. 强制添加 BTCUSDT（作为市场参考，必须包含）
+	symbolSet["BTCUSDT"] = true
+
 	// 打印过滤前的候选币种列表（仅候选，不含持仓）
 	var rawCandidates []string
 	for i, coin := range ctx.CandidateCoins {
@@ -293,7 +300,8 @@ func fetchMarketDataForContext(ctx *Context) error {
 		isExistingPosition := positionSymbols[symbol]
 
 		// ==================== 新增：市场状态过滤 ====================
-		if !isExistingPosition {
+		// BTCUSDT 作为市场参考，不进行过滤
+		if !isExistingPosition && symbol != "BTCUSDT" {
 			// 对新开仓候选币种进行过滤
 			skipReason := shouldSkipSymbol(data, symbol)
 			if skipReason != "" {
@@ -309,6 +317,8 @@ func fetchMarketDataForContext(ctx *Context) error {
 		coinType := "候选币种"
 		if isExistingPosition {
 			coinType = "持仓币种"
+		} else if symbol == "BTCUSDT" {
+			coinType = "市场参考(BTC)"
 		}
 
 		log.Printf("📊 %s %s 进入交易context - 市场状态: %s(置信度%d%%)", coinType, symbol, marketCondition.Condition, marketCondition.Confidence)
@@ -325,7 +335,9 @@ func fetchMarketDataForContext(ctx *Context) error {
 				data.OpenInterest.Latest, oiValueInMillions)
 		}
 
-		log.Printf("   💸 资金费率: %.4f%%", data.FundingRate*100)
+		if data.FundingRate != nil {
+			log.Printf("   💸 资金费率: %.4f%%", data.FundingRate.Latest*100)
+		}
 
 		// 多时间框架趋势
 		if data.MultiTimeframe != nil {
@@ -960,7 +972,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 }
 
 // buildUserPrompt 构建 User Prompt（动态数据）
-func buildUserPrompt(ctx *Context) string {
+func buildUserPrompt(ctx *Context, dataConfig *market.PromptDataConfig) string {
 	var sb strings.Builder
 
 	// 系统状态
@@ -1008,9 +1020,20 @@ func buildUserPrompt(ctx *Context) string {
 				pos.EntryPrice, pos.MarkPrice, pos.UnrealizedPnLPct,
 				pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
 
-			// 使用Format输出完整市场数据
+			// 使用配置格式化市场数据
 			if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
-				sb.WriteString(market.Format(marketData))
+				if dataConfig != nil {
+					schema := market.GetDefaultDataSchema()
+					formatted := market.FormatDataByConfig(marketData, dataConfig, schema)
+					if formatted != "" {
+						sb.WriteString(formatted)
+					} else {
+						// 降级到默认格式
+						sb.WriteString(market.Format(marketData))
+					}
+				} else {
+					sb.WriteString(market.Format(marketData))
+				}
 				sb.WriteString("\n")
 			}
 		}
@@ -1035,9 +1058,20 @@ func buildUserPrompt(ctx *Context) string {
 			sourceTags = " (OI_Top持仓增长)"
 		}
 
-		// 使用Format输出完整市场数据
+		// 使用配置格式化市场数据
 		sb.WriteString(fmt.Sprintf("### %d. %s%s\n\n", displayedCount, coin.Symbol, sourceTags))
-		sb.WriteString(market.Format(marketData))
+		if dataConfig != nil {
+			schema := market.GetDefaultDataSchema()
+			formatted := market.FormatDataByConfig(marketData, dataConfig, schema)
+			if formatted != "" {
+				sb.WriteString(formatted)
+			} else {
+				// 降级到默认格式
+				sb.WriteString(market.Format(marketData))
+			}
+		} else {
+			sb.WriteString(market.Format(marketData))
+		}
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
@@ -1121,7 +1155,7 @@ func buildUserPrompt(ctx *Context) string {
 }
 
 // buildUserPromptWithRAG 构建带RAG功能的User Prompt（在技术指标后添加历史观点）
-func buildUserPromptWithRAG(ctx *Context, traderName string) string {
+func buildUserPromptWithRAG(ctx *Context, traderName string, dataConfig *market.PromptDataConfig) string {
 	var sb strings.Builder
 
 	// 系统状态
@@ -1169,9 +1203,20 @@ func buildUserPromptWithRAG(ctx *Context, traderName string) string {
 				pos.EntryPrice, pos.MarkPrice, pos.UnrealizedPnLPct,
 				pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
 
-			// 使用Format输出完整市场数据
+			// 使用配置格式化市场数据
 			if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
-				sb.WriteString(market.Format(marketData))
+				if dataConfig != nil {
+					schema := market.GetDefaultDataSchema()
+					formatted := market.FormatDataByConfig(marketData, dataConfig, schema)
+					if formatted != "" {
+						sb.WriteString(formatted)
+					} else {
+						// 降级到默认格式
+						sb.WriteString(market.Format(marketData))
+					}
+				} else {
+					sb.WriteString(market.Format(marketData))
+				}
 				sb.WriteString("\n")
 			}
 		}
@@ -1196,9 +1241,20 @@ func buildUserPromptWithRAG(ctx *Context, traderName string) string {
 			sourceTags = " (OI_Top持仓增长)"
 		}
 
-		// 使用Format输出完整市场数据
+		// 使用配置格式化市场数据
 		sb.WriteString(fmt.Sprintf("### %d. %s%s\n\n", displayedCount, coin.Symbol, sourceTags))
-		sb.WriteString(market.Format(marketData))
+		if dataConfig != nil {
+			schema := market.GetDefaultDataSchema()
+			formatted := market.FormatDataByConfig(marketData, dataConfig, schema)
+			if formatted != "" {
+				sb.WriteString(formatted)
+			} else {
+				// 降级到默认格式
+				sb.WriteString(market.Format(marketData))
+			}
+		} else {
+			sb.WriteString(market.Format(marketData))
+		}
 		sb.WriteString("\n")
 	}
 	sb.WriteString("\n")
@@ -1259,6 +1315,58 @@ func buildUserPromptWithRAG(ctx *Context, traderName string) string {
 
 	if rangingCount > len(ctx.MarketDataMap)/2 {
 		sb.WriteString("🚨 **市场整体处于震荡状态**：建议谨慎开仓，耐心等待趋势突破！\n\n")
+	}
+
+	// ==================== 新增：TA-Lib形态识别数据（JSON格式）====================
+	// 只有在配置需要时才包含形态识别数据
+	if dataConfig != nil {
+		hasPatternCategory := false
+		for _, cat := range dataConfig.DataCategories {
+			if cat == "candlestick_patterns" {
+				hasPatternCategory = true
+				break
+			}
+		}
+		if hasPatternCategory {
+			sb.WriteString("## 🕯️ 蜡烛图形态识别（机器可读）\n\n")
+			patternData := make(map[string]interface{})
+			for symbol, marketData := range ctx.MarketDataMap {
+				if marketData.PatternRecognition != nil && len(marketData.PatternRecognition.Patterns) > 0 {
+					patternData[symbol] = marketData.PatternRecognition
+				}
+			}
+			if len(patternData) > 0 {
+				if jsonBytes, err := json.MarshalIndent(patternData, "", "  "); err == nil {
+					sb.WriteString("```json\n")
+					sb.WriteString(string(jsonBytes))
+					sb.WriteString("\n```\n\n")
+				} else {
+					log.Printf("⚠️  序列化形态识别数据失败: %v", err)
+				}
+			} else {
+				sb.WriteString("当前无形态识别信号\n\n")
+			}
+		}
+	} else {
+		// 默认包含形态识别数据（向后兼容）
+		sb.WriteString("## 🕯️ 蜡烛图形态识别（机器可读）\n\n")
+		patternData := make(map[string]interface{})
+		for symbol, marketData := range ctx.MarketDataMap {
+			if marketData.PatternRecognition != nil && len(marketData.PatternRecognition.Patterns) > 0 {
+				patternData[symbol] = marketData.PatternRecognition
+			}
+		}
+		if len(patternData) > 0 {
+			if jsonBytes, err := json.MarshalIndent(patternData, "", "  "); err == nil {
+				sb.WriteString("```json\n")
+				sb.WriteString(string(jsonBytes))
+				sb.WriteString("\n```\n\n")
+			} else {
+				log.Printf("⚠️  序列化形态识别数据失败: %v", err)
+			}
+		} else {
+			sb.WriteString("当前无形态识别信号\n\n")
+		}
 	}
 
 	// ==================== 决策字段数值提示（机器可读，信息确认用） ====================

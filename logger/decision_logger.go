@@ -51,15 +51,30 @@ type PositionSnapshot struct {
 
 // DecisionAction 决策动作
 type DecisionAction struct {
-	Action    string    `json:"action"`    // open_long, open_short, close_long, close_short
-	Symbol    string    `json:"symbol"`    // 币种
-	Quantity  float64   `json:"quantity"`  // 数量
-	Leverage  int       `json:"leverage"`  // 杠杆（开仓时）
-	Price     float64   `json:"price"`     // 执行价格
-	OrderID   int64     `json:"order_id"`  // 订单ID
-	Timestamp time.Time `json:"timestamp"` // 执行时间
-	Success   bool      `json:"success"`   // 是否成功
-	Error     string    `json:"error"`     // 错误信息
+	Action       string         `json:"action"`        // open_long, open_short, close_long, close_short
+	Symbol       string         `json:"symbol"`        // 币种
+	Quantity     float64        `json:"quantity"`      // 数量
+	Leverage     int            `json:"leverage"`       // 杠杆（开仓时）
+	Price        float64        `json:"price"`         // 执行价格
+	OrderID      int64          `json:"order_id"`      // 订单ID
+	Timestamp    time.Time      `json:"timestamp"`     // 执行时间
+	Success      bool           `json:"success"`       // 是否成功
+	Error        string         `json:"error"`         // 错误信息
+	TradeDetails []TradeDetail  `json:"trade_details"` // 成交详情（从币安API获取）
+	TradeChecked bool           `json:"trade_checked"` // 是否已检测成交
+}
+
+// TradeDetail 成交详情
+type TradeDetail struct {
+	TradeID         int64   `json:"trade_id"`          // 交易ID
+	Price           float64 `json:"price"`             // 成交价格
+	Quantity        float64 `json:"quantity"`           // 成交数量
+	QuoteQuantity   float64 `json:"quote_quantity"`    // 成交额
+	Commission      float64 `json:"commission"`         // 手续费
+	CommissionAsset string  `json:"commission_asset"`  // 手续费币种
+	Time            int64   `json:"time"`              // 成交时间（毫秒时间戳）
+	IsBuyer         bool    `json:"is_buyer"`          // 是否买方
+	IsMaker         bool    `json:"is_maker"`          // 是否做市商
 }
 
 // DecisionLogger 决策日志记录器
@@ -110,6 +125,29 @@ func (l *DecisionLogger) LogDecision(record *DecisionRecord) error {
 	}
 
 	fmt.Printf("📝 决策记录已保存: %s\n", filename)
+	return nil
+}
+
+// UpdateDecisionWithTrades 更新决策记录中的成交数据
+func (l *DecisionLogger) UpdateDecisionWithTrades(record *DecisionRecord) error {
+	// 生成文件名
+	filename := fmt.Sprintf("decision_%s_cycle%d.json",
+		record.Timestamp.Format("20060102_150405"),
+		record.CycleNumber)
+
+	filepath := filepath.Join(l.logDir, filename)
+
+	// 序列化为JSON（带缩进，方便阅读）
+	data, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化决策记录失败: %w", err)
+	}
+
+	// 写入文件
+	if err := ioutil.WriteFile(filepath, data, 0644); err != nil {
+		return fmt.Errorf("更新决策记录失败: %w", err)
+	}
+
 	return nil
 }
 

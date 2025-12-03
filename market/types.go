@@ -13,18 +13,35 @@ type Data struct {
 	CurrentMACD       float64
 	CurrentRSI7       float64
 	OpenInterest      *OIData
-	FundingRate       float64
+	FundingRate       *FundingRateData
 	MultiTimeframe    *MultiTimeframeData
 	LongerTermContext *LongerTermData
 	MarketStructure   *MarketStructure   // 新增：市场结构分析
 	FibLevels         *FibLevels         // 新增：斐波那契水平
 	PatternRecognition *PatternRecognition `json:"pattern_recognition,omitempty"` // 新增：形态识别汇总
+	RVol              float64 // 相对成交量：当前K线成交量 / 过去20根K线平均成交量
+	EMADeviation      float64 // EMA偏离度：(当前价格 - EMA20) / EMA20 * 100
+	PDH               float64 // 前日高点 (Previous Day High)
+	PDL               float64 // 前日低点 (Previous Day Low)
 }
 
 // OIData Open Interest数据
 type OIData struct {
-	Latest  float64
-	Average float64
+	Latest      float64 // 当前持仓量
+	Average     float64 // 平均持仓量
+	Change15m   float64 // 15分钟变化率（%）
+	Change1h    float64 // 1小时变化率（%）
+	Change4h    float64 // 4小时变化率（%）
+	Change1d    float64 // 1天变化率（%）
+}
+
+// FundingRateData 资金费率数据
+type FundingRateData struct {
+	Latest    float64 // 当前资金费率
+	Change15m float64 // 15分钟变化率（%）
+	Change1h  float64 // 1小时变化率（%）
+	Change4h  float64 // 4小时变化率（%）
+	Change1d  float64 // 1天变化率（%）
 }
 
 // IntradayData 日内数据(3分钟间隔)
@@ -92,6 +109,7 @@ type TimeframeData struct {
 	TrendDirection string              // "bullish", "bearish", "neutral"
 	SignalStrength int                 // 0-100
 	Patterns       []CandlestickPattern `json:"patterns,omitempty"` // 新增：形态识别结果
+	MarketStructure *MarketStructure   `json:"market_structure,omitempty"` // 新增：该时间框架的市场结构
 }
 
 // CandlestickPattern 单个形态识别结果

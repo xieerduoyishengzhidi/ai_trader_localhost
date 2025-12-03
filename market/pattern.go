@@ -7,6 +7,7 @@ package market
 */
 import "C"
 import (
+	"fmt"
 	"math"
 	"time"
 	"unsafe"
@@ -101,28 +102,47 @@ func detectCandlestickPatterns(klines []Kline, timeframe string) []CandlestickPa
 			// 计算置信度（包含量能分析）
 			confidence := calculateConfidence(latestSignal, klines, klineIndex, avgVol)
 
-			// 生成备注（如果放量，添加备注）
-			note := ""
-			if klineIndex >= 0 && klineIndex < len(klines) {
-				currentVol := klines[klineIndex].Volume
-				if avgVol > 0 {
-					volRatio := currentVol / avgVol
-					if volRatio > 2.0 {
-						note = "Double Volume"
-					} else if volRatio > 1.5 {
-						note = "Volume Spike"
-					} else if volRatio < 0.5 {
-						note = "Low Volume"
-					}
-				}
-			}
-
-			// 转换为语义化信号
+			// 转换为语义化信号（需要在生成note之前定义）
 			side := "neutral"
 			if latestSignal > 0 {
 				side = "bullish"
 			} else if latestSignal < 0 {
 				side = "bearish"
+			}
+
+			// 生成备注：包含量能信息和形态含义
+			note := ""
+			if klineIndex >= 0 && klineIndex < len(klines) {
+				currentVol := klines[klineIndex].Volume
+				volInfo := ""
+				if avgVol > 0 {
+					volRatio := currentVol / avgVol
+					if volRatio > 2.0 {
+						volInfo = fmt.Sprintf("量能: %.1fx (双倍放量，主力进场)", volRatio)
+					} else if volRatio > 1.5 {
+						volInfo = fmt.Sprintf("量能: %.1fx (明显放量)", volRatio)
+					} else if volRatio > 1.2 {
+						volInfo = fmt.Sprintf("量能: %.1fx (温和放量)", volRatio)
+					} else if volRatio < 0.5 {
+						volInfo = fmt.Sprintf("量能: %.1fx (严重缩量，警惕假突破)", volRatio)
+					} else if volRatio < 0.8 {
+						volInfo = fmt.Sprintf("量能: %.1fx (缩量，可能假突破)", volRatio)
+					} else {
+						volInfo = fmt.Sprintf("量能: %.1fx (正常)", volRatio)
+					}
+				}
+
+				// 获取形态含义
+				patternMeaning := getPatternMeaning(config.name, side)
+
+				// 组合量能和形态含义
+				if volInfo != "" && patternMeaning != "" {
+					note = fmt.Sprintf("%s | 形态含义: %s", volInfo, patternMeaning)
+				} else if volInfo != "" {
+					note = volInfo
+				} else if patternMeaning != "" {
+					note = fmt.Sprintf("形态含义: %s", patternMeaning)
+				}
 			}
 
 			pattern := CandlestickPattern{
@@ -167,9 +187,9 @@ func callTALibCdlFunction(fnID int, open, high, low, close []float64) []float64 
 	outBegIdx := C.int(0)
 	outNBElement := C.int(0)
 
-	// 分配输出数组
-	outReal := make([]C.double, len(open))
-	cOutReal := (*C.double)(unsafe.Pointer(&outReal[0]))
+	// 分配输出数组（TA-Lib CDL函数返回int类型，不是double）
+	outReal := make([]C.int, len(open))
+	cOutReal := (*C.int)(unsafe.Pointer(&outReal[0]))
 
 	// 根据函数ID调用对应的TA-Lib函数
 	// 这里使用函数指针表，简化调用
@@ -196,12 +216,15 @@ func callTALibCdlFunction(fnID int, open, high, low, close []float64) []float64 
 		retCode = C.TA_CDLHARAMI(startIdx, endIdx, &cOpen[0], &cHigh[0], &cLow[0], &cClose[0], &outBegIdx, &outNBElement, cOutReal)
 	case 30: // CDLPIERCING
 		retCode = C.TA_CDLPIERCING(startIdx, endIdx, &cOpen[0], &cHigh[0], &cLow[0], &cClose[0], &outBegIdx, &outNBElement, cOutReal)
-	case 31: // CDLDARKCLOUDCOVER
-		retCode = C.TA_CDLDARKCLOUDCOVER(startIdx, endIdx, &cOpen[0], &cHigh[0], &cLow[0], &cClose[0], &outBegIdx, &outNBElement, cOutReal)
-	case 32: // CDLMORNINGSTAR
-		retCode = C.TA_CDLMORNINGSTAR(startIdx, endIdx, &cOpen[0], &cHigh[0], &cLow[0], &cClose[0], &outBegIdx, &outNBElement, cOutReal)
-	case 33: // CDLEVENINGSTAR
-		retCode = C.TA_CDLEVENINGSTAR(startIdx, endIdx, &cOpen[0], &cHigh[0], &cLow[0], &cClose[0], &outBegIdx, &outNBElement, cOutReal)
+	case 31: // CDLDARKCLOUDCOVER (需要penetration参数，默认0.5即50%)
+		penetration := C.double(0.5)
+		retCode = C.TA_CDLDARKCLOUDCOVER(startIdx, endIdx, &cOpen[0], &cHigh[0], &cLow[0], &cClose[0], penetration, &outBegIdx, &outNBElement, cOutReal)
+	case 32: // CDLMORNINGSTAR (需要penetration参数，默认0.3即30%)
+		penetration := C.double(0.3)
+		retCode = C.TA_CDLMORNINGSTAR(startIdx, endIdx, &cOpen[0], &cHigh[0], &cLow[0], &cClose[0], penetration, &outBegIdx, &outNBElement, cOutReal)
+	case 33: // CDLEVENINGSTAR (需要penetration参数，默认0.3即30%)
+		penetration := C.double(0.3)
+		retCode = C.TA_CDLEVENINGSTAR(startIdx, endIdx, &cOpen[0], &cHigh[0], &cLow[0], &cClose[0], penetration, &outBegIdx, &outNBElement, cOutReal)
 	case 34: // CDL3BLACKCROWS
 		retCode = C.TA_CDL3BLACKCROWS(startIdx, endIdx, &cOpen[0], &cHigh[0], &cLow[0], &cClose[0], &outBegIdx, &outNBElement, cOutReal)
 	case 35: // CDL3WHITESOLDIERS
@@ -231,6 +254,7 @@ func callTALibCdlFunction(fnID int, open, high, low, close []float64) []float64 
 		result[i] = 0.0
 	}
 	// 填充实际结果（从outBegIdx位置开始）
+	// TA-Lib CDL函数返回int类型：100=看涨, -100=看跌, 0=无信号
 	for i := 0; i < int(outNBElement); i++ {
 		if int(outBegIdx)+i < len(result) {
 			result[int(outBegIdx)+i] = float64(outReal[i])
@@ -359,6 +383,91 @@ func getPatternDisplayName(name string) string {
 		return displayName
 	}
 	return name // 如果没有找到，返回原名
+}
+
+// getPatternMeaning 获取形态的含义说明
+func getPatternMeaning(patternName, side string) string {
+	meanings := map[string]map[string]string{
+		"CDLHAMMER": {
+			"bullish": "看涨反转形态，出现在下跌趋势底部，下影线长表示买盘强劲",
+			"bearish": "看跌反转形态，出现在上涨趋势顶部，下影线长但收盘价低",
+		},
+		"CDLSHOOTINGSTAR": {
+			"bullish": "看涨反转形态，出现在下跌趋势中，上影线长表示卖压被消化",
+			"bearish": "看跌反转形态，出现在上涨趋势顶部，上影线长表示卖压强劲",
+		},
+		"CDLDOJI": {
+			"bullish": "多空平衡，出现在关键位置可能预示反转",
+			"bearish": "多空平衡，出现在关键位置可能预示反转",
+		},
+		"CDLHANGINGMAN": {
+			"bullish": "看涨反转形态，出现在下跌趋势中",
+			"bearish": "看跌反转形态，出现在上涨趋势顶部，需确认",
+		},
+		"CDLINVERTEDHAMMER": {
+			"bullish": "看涨反转形态，出现在下跌趋势底部，上影线长表示买盘尝试",
+			"bearish": "看跌反转形态，出现在上涨趋势顶部",
+		},
+		"CDLSPINNINGTOP": {
+			"bullish": "多空争夺激烈，出现在关键位置需关注",
+			"bearish": "多空争夺激烈，出现在关键位置需关注",
+		},
+		"CDLMARUBOZU": {
+			"bullish": "强势看涨，实体大无影线，表示单边上涨动能强",
+			"bearish": "强势看跌，实体大无影线，表示单边下跌动能强",
+		},
+		"CDLENGULFING": {
+			"bullish": "看涨吞噬，第二根K线完全吞没第一根，反转信号强",
+			"bearish": "看跌吞噬，第二根K线完全吞没第一根，反转信号强",
+		},
+		"CDLHARAMI": {
+			"bullish": "看涨孕线，小实体被大实体包含，可能预示反转",
+			"bearish": "看跌孕线，小实体被大实体包含，可能预示反转",
+		},
+		"CDLPIERCING": {
+			"bullish": "刺透形态，第二根阳线刺入第一根阴线实体，看涨反转",
+			"bearish": "看跌形态",
+		},
+		"CDLDARKCLOUDCOVER": {
+			"bullish": "看涨形态",
+			"bearish": "乌云盖顶，第二根阴线覆盖第一根阳线，看跌反转信号",
+		},
+		"CDLMORNINGSTAR": {
+			"bullish": "晨星形态，三根K线组合，出现在底部预示看涨反转",
+			"bearish": "看跌形态",
+		},
+		"CDLEVENINGSTAR": {
+			"bullish": "看涨形态",
+			"bearish": "暮星形态，三根K线组合，出现在顶部预示看跌反转",
+		},
+		"CDL3BLACKCROWS": {
+			"bullish": "看涨形态",
+			"bearish": "三只乌鸦，连续三根阴线，看跌信号强烈",
+		},
+		"CDL3WHITESOLDIERS": {
+			"bullish": "三白兵，连续三根阳线，看涨信号强烈",
+			"bearish": "看跌形态",
+		},
+		"CDL3INSIDE": {
+			"bullish": "三内升，看涨反转形态",
+			"bearish": "三内降，看跌反转形态",
+		},
+		"CDL3LINESTRIKE": {
+			"bullish": "三线打击，看涨反转形态",
+			"bearish": "三线打击，看跌反转形态",
+		},
+	}
+
+	if patternMeanings, ok := meanings[patternName]; ok {
+		if meaning, ok := patternMeanings[side]; ok {
+			return meaning
+		}
+		// 如果没有找到对应side的含义，返回第一个可用的
+		for _, m := range patternMeanings {
+			return m
+		}
+	}
+	return "" // 如果没有找到，返回空字符串
 }
 
 // aggregatePatterns 汇总所有时间框架的形态识别结果

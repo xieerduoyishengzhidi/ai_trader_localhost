@@ -138,6 +138,73 @@ func (d *Database) createTables() error {
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
+		// 交易员决策日志主表（对应 DecisionRecord）
+		`CREATE TABLE IF NOT EXISTS trader_decision_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			trader_id TEXT NOT NULL,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			cycle_number INTEGER,
+			system_prompt TEXT,
+			user_prompt TEXT,
+			cot_trace TEXT,
+			decision_json TEXT,
+			ai_raw_response TEXT,
+			account_state_json TEXT,
+			positions_json TEXT,
+			candidate_coins_json TEXT,
+			execution_log_json TEXT,
+			success BOOLEAN DEFAULT 0,
+			error_message TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (trader_id) REFERENCES traders(id) ON DELETE CASCADE
+		)`,
+
+		// 决策动作表（对应 DecisionAction，一个决策记录可能有多个决策动作）
+		`CREATE TABLE IF NOT EXISTS trader_decision_actions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			decision_log_id INTEGER NOT NULL,
+			action TEXT NOT NULL,
+			symbol TEXT NOT NULL,
+			quantity REAL,
+			leverage INTEGER,
+			price REAL,
+			order_id INTEGER,
+			timestamp DATETIME,
+			success BOOLEAN DEFAULT 0,
+			error TEXT,
+			trade_checked BOOLEAN DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (decision_log_id) REFERENCES trader_decision_logs(id) ON DELETE CASCADE
+		)`,
+
+		// 成交详情表（对应 TradeDetail，一个决策动作可能有多个成交记录）
+		`CREATE TABLE IF NOT EXISTS trader_trade_details (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			decision_action_id INTEGER NOT NULL,
+			trade_id INTEGER NOT NULL,
+			price REAL NOT NULL,
+			quantity REAL NOT NULL,
+			quote_quantity REAL,
+			commission REAL,
+			commission_asset TEXT,
+			time INTEGER NOT NULL,
+			is_buyer BOOLEAN DEFAULT 0,
+			is_maker BOOLEAN DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (decision_action_id) REFERENCES trader_decision_actions(id) ON DELETE CASCADE
+		)`,
+
+		// 为决策日志表创建索引
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_trader_id ON trader_decision_logs(trader_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_timestamp ON trader_decision_logs(timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_trader_timestamp ON trader_decision_logs(trader_id, timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_log_id ON trader_decision_actions(decision_log_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_order_id ON trader_decision_actions(order_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_trade_details_action_id ON trader_trade_details(decision_action_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_trade_details_trade_id ON trader_trade_details(trade_id)`,
+
 		// 触发器：自动更新 updated_at
 		`CREATE TRIGGER IF NOT EXISTS update_users_updated_at
 			AFTER UPDATE ON users
@@ -174,6 +241,18 @@ func (d *Database) createTables() error {
 			BEGIN
 				UPDATE system_config SET updated_at = CURRENT_TIMESTAMP WHERE key = NEW.key;
 			END`,
+
+		`CREATE TRIGGER IF NOT EXISTS update_trader_decision_logs_updated_at
+			AFTER UPDATE ON trader_decision_logs
+			BEGIN
+				UPDATE trader_decision_logs SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+			END`,
+
+		`CREATE TRIGGER IF NOT EXISTS update_trader_decision_actions_updated_at
+			AFTER UPDATE ON trader_decision_actions
+			BEGIN
+				UPDATE trader_decision_actions SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
+			END`,
 	}
 
 	for _, query := range queries {
@@ -190,17 +269,24 @@ func (d *Database) createTables() error {
 		`ALTER TABLE exchanges ADD COLUMN aster_private_key TEXT DEFAULT ''`,
 		`ALTER TABLE traders ADD COLUMN custom_prompt TEXT DEFAULT ''`,
 		`ALTER TABLE traders ADD COLUMN override_base_prompt BOOLEAN DEFAULT 0`,
-		`ALTER TABLE traders ADD COLUMN is_cross_margin BOOLEAN DEFAULT 1`,             // 默认为全仓模式
-		`ALTER TABLE traders ADD COLUMN use_default_coins BOOLEAN DEFAULT 1`,           // 默认使用默认币种
-		`ALTER TABLE traders ADD COLUMN custom_coins TEXT DEFAULT ''`,                  // 自定义币种列表（JSON格式）
-		`ALTER TABLE traders ADD COLUMN btc_eth_leverage INTEGER DEFAULT 5`,            // BTC/ETH杠杆倍数
-		`ALTER TABLE traders ADD COLUMN altcoin_leverage INTEGER DEFAULT 5`,            // 山寨币杠杆倍数
-		`ALTER TABLE traders ADD COLUMN trading_symbols TEXT DEFAULT ''`,               // 交易币种，逗号分隔
-		`ALTER TABLE traders ADD COLUMN use_coin_pool BOOLEAN DEFAULT 0`,               // 是否使用COIN POOL信号源
-		`ALTER TABLE traders ADD COLUMN use_oi_top BOOLEAN DEFAULT 0`,                  // 是否使用OI TOP信号源
-		`ALTER TABLE traders ADD COLUMN system_prompt_template TEXT DEFAULT 'default'`, // 系统提示词模板名称
-		`ALTER TABLE ai_models ADD COLUMN custom_api_url TEXT DEFAULT ''`,              // 自定义API地址
-		`ALTER TABLE ai_models ADD COLUMN custom_model_name TEXT DEFAULT ''`,           // 自定义模型名称
+		`ALTER TABLE traders ADD COLUMN is_cross_margin BOOLEAN DEFAULT 1`,                          // 默认为全仓模式
+		`ALTER TABLE traders ADD COLUMN use_default_coins BOOLEAN DEFAULT 1`,                        // 默认使用默认币种
+		`ALTER TABLE traders ADD COLUMN custom_coins TEXT DEFAULT ''`,                               // 自定义币种列表（JSON格式）
+		`ALTER TABLE traders ADD COLUMN btc_eth_leverage INTEGER DEFAULT 5`,                         // BTC/ETH杠杆倍数
+		`ALTER TABLE traders ADD COLUMN altcoin_leverage INTEGER DEFAULT 5`,                         // 山寨币杠杆倍数
+		`ALTER TABLE traders ADD COLUMN trading_symbols TEXT DEFAULT ''`,                            // 交易币种，逗号分隔
+		`ALTER TABLE traders ADD COLUMN use_coin_pool BOOLEAN DEFAULT 0`,                            // 是否使用COIN POOL信号源
+		`ALTER TABLE traders ADD COLUMN use_oi_top BOOLEAN DEFAULT 0`,                               // 是否使用OI TOP信号源
+		`ALTER TABLE traders ADD COLUMN system_prompt_template TEXT DEFAULT 'default'`,              // 系统提示词模板名称
+		`ALTER TABLE ai_models ADD COLUMN custom_api_url TEXT DEFAULT ''`,                           // 自定义API地址
+		`ALTER TABLE ai_models ADD COLUMN custom_model_name TEXT DEFAULT ''`,                        // 自定义模型名称
+		`ALTER TABLE trader_decision_logs ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`, // 决策日志表更新时间
+		`ALTER TABLE trader_decision_logs ADD COLUMN account_state_json TEXT DEFAULT ''`,            // 账户状态JSON
+		`ALTER TABLE trader_decision_logs ADD COLUMN positions_json TEXT DEFAULT ''`,                // 持仓快照JSON
+		`ALTER TABLE trader_decision_logs ADD COLUMN candidate_coins_json TEXT DEFAULT ''`,          // 候选币种JSON
+		`ALTER TABLE trader_decision_logs ADD COLUMN execution_log_json TEXT DEFAULT ''`,            // 执行日志JSON
+		`ALTER TABLE trader_decision_logs ADD COLUMN success BOOLEAN DEFAULT 0`,                     // 是否成功
+		`ALTER TABLE trader_decision_logs ADD COLUMN error_message TEXT DEFAULT ''`,                 // 错误信息
 	}
 
 	for _, query := range alterQueries {
@@ -258,17 +344,17 @@ func (d *Database) initDefaultData() error {
 
 	// 初始化系统配置 - 创建所有字段，设置默认值，后续由config.json同步更新
 	systemConfigs := map[string]string{
-		"admin_mode":            "true",                                                                                // 默认开启管理员模式，便于首次使用
-		"beta_mode":             "false",                                                                             // 默认关闭内测模式
-		"api_server_port":       "8080",                                                                                // 默认API端口
-		"use_default_coins":     "true",                                                                                // 默认使用内置币种列表
-		"default_coins":         `["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","HYPEUSDT"]`, // 默认币种列表（JSON格式）
-		"max_daily_loss":        "10.0",                                                                                // 最大日损失百分比
-		"max_drawdown":          "20.0",                                                                                // 最大回撤百分比
-		"stop_trading_minutes":  "60",                                                                                  // 停止交易时间（分钟）
-		"btc_eth_leverage":      "5",                                                                                   // BTC/ETH杠杆倍数
-		"altcoin_leverage":      "5",                                                                                   // 山寨币杠杆倍数
-		"jwt_secret":            "",                                                                                    // JWT密钥，默认为空，由config.json或系统生成
+		"admin_mode":           "true",                                                                                // 默认开启管理员模式，便于首次使用
+		"beta_mode":            "false",                                                                               // 默认关闭内测模式
+		"api_server_port":      "8080",                                                                                // 默认API端口
+		"use_default_coins":    "true",                                                                                // 默认使用内置币种列表
+		"default_coins":        `["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","DOGEUSDT","ADAUSDT","HYPEUSDT"]`, // 默认币种列表（JSON格式）
+		"max_daily_loss":       "10.0",                                                                                // 最大日损失百分比
+		"max_drawdown":         "20.0",                                                                                // 最大回撤百分比
+		"stop_trading_minutes": "60",                                                                                  // 停止交易时间（分钟）
+		"btc_eth_leverage":     "5",                                                                                   // BTC/ETH杠杆倍数
+		"altcoin_leverage":     "5",                                                                                   // 山寨币杠杆倍数
+		"jwt_secret":           "",                                                                                    // JWT密钥，默认为空，由config.json或系统生成
 	}
 
 	for key, value := range systemConfigs {
@@ -1037,7 +1123,7 @@ func (d *Database) LoadBetaCodesFromFile(filePath string) error {
 			log.Printf("插入内测码 %s 失败: %v", code, err)
 			continue
 		}
-		
+
 		if rowsAffected, _ := result.RowsAffected(); rowsAffected > 0 {
 			insertedCount++
 		}
@@ -1099,4 +1185,252 @@ func (d *Database) GetBetaCodeStats() (total, used int, err error) {
 	}
 
 	return total, used, nil
+}
+
+// TraderDecisionLog 交易员决策日志（对应 DecisionRecord）
+type TraderDecisionLog struct {
+	ID                 int64     `json:"id"`
+	TraderID           string    `json:"trader_id"`
+	Timestamp          time.Time `json:"timestamp"`
+	CycleNumber        int       `json:"cycle_number"`
+	SystemPrompt       string    `json:"system_prompt"`
+	UserPrompt         string    `json:"user_prompt"`
+	CoTTrace           string    `json:"cot_trace"`
+	DecisionJSON       string    `json:"decision_json"`
+	AIRawResponse      string    `json:"ai_raw_response"`
+	AccountStateJSON   string    `json:"account_state_json"`   // AccountSnapshot 的 JSON
+	PositionsJSON      string    `json:"positions_json"`       // []PositionSnapshot 的 JSON
+	CandidateCoinsJSON string    `json:"candidate_coins_json"` // []string 的 JSON
+	ExecutionLogJSON   string    `json:"execution_log_json"`   // []string 的 JSON
+	Success            bool      `json:"success"`
+	ErrorMessage       string    `json:"error_message"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// TraderDecisionAction 决策动作（对应 DecisionAction）
+type TraderDecisionAction struct {
+	ID            int64     `json:"id"`
+	DecisionLogID int64     `json:"decision_log_id"`
+	Action        string    `json:"action"`        // open_long, open_short, close_long, close_short
+	Symbol        string    `json:"symbol"`        // 币种
+	Quantity      float64   `json:"quantity"`      // 数量
+	Leverage      int       `json:"leverage"`      // 杠杆
+	Price         float64   `json:"price"`         // 执行价格
+	OrderID       int64     `json:"order_id"`      // 订单ID
+	Timestamp     time.Time `json:"timestamp"`     // 执行时间
+	Success       bool      `json:"success"`       // 是否成功
+	Error         string    `json:"error"`         // 错误信息
+	TradeChecked  bool      `json:"trade_checked"` // 是否已检测成交
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// TraderTradeDetail 成交详情（对应 TradeDetail）
+type TraderTradeDetail struct {
+	ID               int64     `json:"id"`
+	DecisionActionID int64     `json:"decision_action_id"`
+	TradeID          int64     `json:"trade_id"`         // 交易ID
+	Price            float64   `json:"price"`            // 成交价格
+	Quantity         float64   `json:"quantity"`         // 成交数量
+	QuoteQuantity    float64   `json:"quote_quantity"`   // 成交额
+	Commission       float64   `json:"commission"`       // 手续费
+	CommissionAsset  string    `json:"commission_asset"` // 手续费币种
+	Time             int64     `json:"time"`             // 成交时间（毫秒时间戳）
+	IsBuyer          bool      `json:"is_buyer"`         // 是否买方
+	IsMaker          bool      `json:"is_maker"`         // 是否做市商
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+// SaveTraderDecisionLog 保存交易员决策日志（完整保存 DecisionRecord）
+func (d *Database) SaveTraderDecisionLog(log *TraderDecisionLog) (int64, error) {
+	result, err := d.db.Exec(`
+		INSERT INTO trader_decision_logs (
+			trader_id, timestamp, cycle_number, system_prompt, user_prompt,
+			cot_trace, decision_json, ai_raw_response,
+			account_state_json, positions_json, candidate_coins_json,
+			execution_log_json, success, error_message
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		log.TraderID, log.Timestamp, log.CycleNumber, log.SystemPrompt, log.UserPrompt,
+		log.CoTTrace, log.DecisionJSON, log.AIRawResponse,
+		log.AccountStateJSON, log.PositionsJSON, log.CandidateCoinsJSON,
+		log.ExecutionLogJSON, log.Success, log.ErrorMessage,
+	)
+	if err != nil {
+		return 0, err
+	}
+	id, err := result.LastInsertId()
+	return id, err
+}
+
+// SaveTraderDecisionAction 保存决策动作
+func (d *Database) SaveTraderDecisionAction(action *TraderDecisionAction) (int64, error) {
+	result, err := d.db.Exec(`
+		INSERT INTO trader_decision_actions (
+			decision_log_id, action, symbol, quantity, leverage, price,
+			order_id, timestamp, success, error, trade_checked
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		action.DecisionLogID, action.Action, action.Symbol, action.Quantity,
+		action.Leverage, action.Price, action.OrderID, action.Timestamp,
+		action.Success, action.Error, action.TradeChecked,
+	)
+	if err != nil {
+		return 0, err
+	}
+	id, err := result.LastInsertId()
+	return id, err
+}
+
+// SaveTraderTradeDetail 保存成交详情
+func (d *Database) SaveTraderTradeDetail(detail *TraderTradeDetail) error {
+	_, err := d.db.Exec(`
+		INSERT INTO trader_trade_details (
+			decision_action_id, trade_id, price, quantity, quote_quantity,
+			commission, commission_asset, time, is_buyer, is_maker
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		detail.DecisionActionID, detail.TradeID, detail.Price, detail.Quantity,
+		detail.QuoteQuantity, detail.Commission, detail.CommissionAsset,
+		detail.Time, detail.IsBuyer, detail.IsMaker,
+	)
+	return err
+}
+
+// GetTraderDecisionLogs 获取交易员的决策日志（按时间倒序）
+func (d *Database) GetTraderDecisionLogs(traderID string, limit int) ([]*TraderDecisionLog, error) {
+	query := `
+		SELECT id, trader_id, timestamp, cycle_number, system_prompt, user_prompt,
+		       cot_trace, decision_json, ai_raw_response,
+		       account_state_json, positions_json, candidate_coins_json,
+		       execution_log_json, success, error_message, created_at, updated_at
+		FROM trader_decision_logs
+		WHERE trader_id = ?
+		ORDER BY timestamp DESC
+	`
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+
+	rows, err := d.db.Query(query, traderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []*TraderDecisionLog
+	for rows.Next() {
+		log := &TraderDecisionLog{}
+		err := rows.Scan(
+			&log.ID, &log.TraderID, &log.Timestamp, &log.CycleNumber,
+			&log.SystemPrompt, &log.UserPrompt, &log.CoTTrace, &log.DecisionJSON, &log.AIRawResponse,
+			&log.AccountStateJSON, &log.PositionsJSON, &log.CandidateCoinsJSON,
+			&log.ExecutionLogJSON, &log.Success, &log.ErrorMessage,
+			&log.CreatedAt, &log.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		logs = append(logs, log)
+	}
+
+	return logs, nil
+}
+
+// GetTraderDecisionActions 获取决策日志的所有决策动作
+func (d *Database) GetTraderDecisionActions(decisionLogID int64) ([]*TraderDecisionAction, error) {
+	rows, err := d.db.Query(`
+		SELECT id, decision_log_id, action, symbol, quantity, leverage, price,
+		       order_id, timestamp, success, error, trade_checked, created_at, updated_at
+		FROM trader_decision_actions
+		WHERE decision_log_id = ?
+		ORDER BY timestamp ASC
+	`, decisionLogID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var actions []*TraderDecisionAction
+	for rows.Next() {
+		action := &TraderDecisionAction{}
+		err := rows.Scan(
+			&action.ID, &action.DecisionLogID, &action.Action, &action.Symbol,
+			&action.Quantity, &action.Leverage, &action.Price, &action.OrderID,
+			&action.Timestamp, &action.Success, &action.Error, &action.TradeChecked,
+			&action.CreatedAt, &action.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		actions = append(actions, action)
+	}
+
+	return actions, nil
+}
+
+// GetTraderTradeDetails 获取决策动作的所有成交详情
+func (d *Database) GetTraderTradeDetails(decisionActionID int64) ([]*TraderTradeDetail, error) {
+	rows, err := d.db.Query(`
+		SELECT id, decision_action_id, trade_id, price, quantity, quote_quantity,
+		       commission, commission_asset, time, is_buyer, is_maker, created_at
+		FROM trader_trade_details
+		WHERE decision_action_id = ?
+		ORDER BY time ASC
+	`, decisionActionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var details []*TraderTradeDetail
+	for rows.Next() {
+		detail := &TraderTradeDetail{}
+		err := rows.Scan(
+			&detail.ID, &detail.DecisionActionID, &detail.TradeID, &detail.Price,
+			&detail.Quantity, &detail.QuoteQuantity, &detail.Commission,
+			&detail.CommissionAsset, &detail.Time, &detail.IsBuyer, &detail.IsMaker,
+			&detail.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		details = append(details, detail)
+	}
+
+	return details, nil
+}
+
+// GetTraderDecisionLogByID 根据ID获取决策日志
+func (d *Database) GetTraderDecisionLogByID(id int64) (*TraderDecisionLog, error) {
+	log := &TraderDecisionLog{}
+	err := d.db.QueryRow(`
+		SELECT id, trader_id, timestamp, cycle_number, system_prompt, user_prompt,
+		       cot_trace, decision_json, ai_raw_response,
+		       account_state_json, positions_json, candidate_coins_json,
+		       execution_log_json, success, error_message, created_at, updated_at
+		FROM trader_decision_logs
+		WHERE id = ?
+	`, id).Scan(
+		&log.ID, &log.TraderID, &log.Timestamp, &log.CycleNumber,
+		&log.SystemPrompt, &log.UserPrompt, &log.CoTTrace, &log.DecisionJSON, &log.AIRawResponse,
+		&log.AccountStateJSON, &log.PositionsJSON, &log.CandidateCoinsJSON,
+		&log.ExecutionLogJSON, &log.Success, &log.ErrorMessage,
+		&log.CreatedAt, &log.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return log, nil
+}
+
+// UpdateTraderDecisionAction 更新决策动作信息
+func (d *Database) UpdateTraderDecisionAction(id int64, quantity float64, price float64, orderID int64, success bool, errorMsg string, tradeChecked bool) error {
+	_, err := d.db.Exec(`
+		UPDATE trader_decision_actions
+		SET quantity = ?, price = ?, order_id = ?, success = ?, error = ?, trade_checked = ?
+		WHERE id = ?
+	`, quantity, price, orderID, success, errorMsg, tradeChecked, id)
+	return err
 }

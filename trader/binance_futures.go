@@ -208,6 +208,11 @@ func (t *FuturesTrader) SetLeverage(symbol string, leverage int) error {
 			log.Printf("  ✓ %s 杠杆已是 %dx", symbol, leverage)
 			return nil
 		}
+		// 如果错误是 "Symbol is closed" (错误代码 -4141)，说明交易对已关闭
+		if contains(err.Error(), "Symbol is closed") || contains(err.Error(), "-4141") {
+			log.Printf("  ❌ %s 交易对已关闭，无法设置杠杆", symbol)
+			return fmt.Errorf("交易对 %s 已关闭或不可交易，请检查币安交易所状态", symbol)
+		}
 		return fmt.Errorf("设置杠杆失败: %w", err)
 	}
 
@@ -250,6 +255,10 @@ func (t *FuturesTrader) OpenLong(symbol string, quantity float64, leverage int) 
 		Do(context.Background())
 
 	if err != nil {
+		// 如果错误是 "Symbol is closed" (错误代码 -4141)，说明交易对已关闭
+		if contains(err.Error(), "Symbol is closed") || contains(err.Error(), "-4141") {
+			return nil, fmt.Errorf("交易对 %s 已关闭或不可交易，无法开多仓。请检查币安交易所状态或从候选列表中移除该交易对", symbol)
+		}
 		return nil, fmt.Errorf("开多仓失败: %w", err)
 	}
 
@@ -293,6 +302,10 @@ func (t *FuturesTrader) OpenShort(symbol string, quantity float64, leverage int)
 		Do(context.Background())
 
 	if err != nil {
+		// 如果错误是 "Symbol is closed" (错误代码 -4141)，说明交易对已关闭
+		if contains(err.Error(), "Symbol is closed") || contains(err.Error(), "-4141") {
+			return nil, fmt.Errorf("交易对 %s 已关闭或不可交易，无法开空仓。请检查币安交易所状态或从候选列表中移除该交易对", symbol)
+		}
 		return nil, fmt.Errorf("开空仓失败: %w", err)
 	}
 
@@ -626,6 +639,29 @@ func (t *FuturesTrader) FormatQuantity(symbol string, quantity float64) (string,
 
 	format := fmt.Sprintf("%%.%df", precision)
 	return fmt.Sprintf(format, quantity), nil
+}
+
+// GetOrderTrades 获取订单的成交记录
+func (t *FuturesTrader) GetOrderTrades(symbol string, orderID int64) ([]map[string]interface{}, error) {
+	ctx := context.Background()
+
+	// 获取用户交易历史，筛选出指定订单ID的成交记录
+	// 注意：Binance API的userTrades接口可以通过orderId筛选，但需要先获取最近的交易记录
+	// 我们使用时间范围查询，然后筛选出匹配的订单ID
+
+	// 查询最近1小时的交易记录（通常订单会在几分钟内成交）
+	startTime := time.Now().Add(-1 * time.Hour).UnixMilli()
+	endTime := time.Now().UnixMilli()
+
+	// 使用go-binance库获取用户交易记录
+	// 注意：go-binance库可能没有直接的方法，我们需要使用HTTP请求
+	// 但为了简化，我们先尝试使用现有的方法
+
+	// 由于go-binance库的限制，我们需要直接调用API
+	// 这里返回一个接口，让调用方知道需要实现这个方法
+	// 实际实现会在tools中提供
+
+	return nil, fmt.Errorf("GetOrderTrades需要实现，请使用tools中的方法")
 }
 
 // 辅助函数

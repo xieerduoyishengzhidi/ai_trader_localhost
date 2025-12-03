@@ -59,3 +59,4 @@ Write-Host "💡 下一步：" -ForegroundColor Yellow
 Write-Host "   1. 运行容器: docker run -p 8080:8080 nofx-backend" -ForegroundColor White
 Write-Host "   2. 或使用 docker-compose: docker-compose up" -ForegroundColor White
 
+

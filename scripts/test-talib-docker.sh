@@ -63,3 +63,4 @@ echo "💡 下一步："
 echo "   1. 运行容器: docker run -p 8080:8080 nofx-backend"
 echo "   2. 或使用 docker-compose: docker-compose up"
 
+
