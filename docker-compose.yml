@@ -47,6 +47,31 @@ services:
       retries: 3
       start_period: 5s
 
+  # Instructor service (Python service for structured LLM output)
+  # API 配置从 config.db 中读取，通过请求参数传递，不需要环境变量
+  instructor-service:
+    build:
+      context: ./instructor_service
+      dockerfile: Dockerfile
+    container_name: instructor-service
+    restart: unless-stopped
+    ports:
+      - "${INSTRUCTOR_PORT:-8000}:8000"
+    environment:
+      - PORT=8000
+      # 可选：如果没有在请求中提供配置，可以使用环境变量作为后备
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+    networks:
+      - nofx-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
 networks:
   nofx-network:
     driver: bridge

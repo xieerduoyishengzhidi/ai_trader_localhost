@@ -97,10 +97,10 @@ func GetDefaultDataSchema() *DataSchema {
 			{
 				ID:          "market_structure",
 				Name:        "市场结构",
-				Description: "波段高点/低点、当前偏向（bullish/bearish/neutral）",
+				Description: "波段高点/低点、当前偏向（bullish/bearish/neutral）。每个时间框架（15m/1h/4h/1d）都有独立的市场结构，Data.MarketStructure为日线结构（向后兼容）",
 				Fields:      []string{"MarketStructure"},
 				Required:    false,
-				Timeframes:  []string{"1d"},
+				Timeframes:  []string{"15m", "1h", "4h", "1d"}, // 每个时间框架都有独立的市场结构
 			},
 			// 8. 斐波那契水平
 			{
@@ -182,7 +182,7 @@ func GetDefaultDataSchema() *DataSchema {
 			"LongerTermContext": "长期数据对象（基于4h），包含：EMA20/EMA50、ATR3/ATR14、成交量、MACD序列、RSI14序列",
 
 			// 市场结构
-			"MarketStructure": "市场结构对象，包含：波段高点数组、波段低点数组、当前偏向（bullish/bearish/neutral）",
+			"MarketStructure": "市场结构对象，包含：波段高点数组、波段低点数组、当前偏向（bullish/bearish/neutral）、斐波那契水平。每个时间框架（15m/1h/4h/1d）都有独立的市场结构，Data.MarketStructure为日线结构（向后兼容）",
 
 			// 斐波那契
 			"FibLevels": "斐波那契水平对象，包含：0.236/0.382/0.5/0.618/0.705/0.786水平、波段高点/低点、趋势方向",
@@ -210,26 +210,25 @@ func GetDefaultDataSchema() *DataSchema {
 func GetPromptDataConfig(promptName string) *PromptDataConfig {
 	configs := map[string]*PromptDataConfig{
 		// 林凡多空策略配置
-		"林凡_多空": {
-			PromptName: "林凡_多空",
+		"1bxxx": {
+			PromptName: "1bxxx",
 			DataCategories: []string{
-				"basic_price",          // 必需：价格数据
-				"technical_indicators", // 必需：技术指标
-				"multi_timeframe",      // 多时间框架确认
-				"market_structure",     // 市场结构（用于判断趋势）
-				"fibonacci",            // 斐波那契（用于OTE入场）
-				"candlestick_patterns", // 形态识别（用于入场信号）
-				"volume_analysis",      // 成交量（用于S2突破确认）
-				"open_interest",        // 持仓量（用于强弱判断）
-				"market_condition",     // 市场状态（避免震荡市）
+				"basic_price",          // 基礎價格 (PriceChange)
+				"technical_indicators", // 主圖指標 (EMA20, MACD)
+				"multi_timeframe",      // 多週期數據 (包含 ATR14, 4H/1H 趨勢)
+				"market_structure",     // 市場結構 (高低點)
+				"candlestick_patterns", // K線形態 (識別光頭光腳/吞噬)
+				"volume_analysis",      // 成交量分析 (RVol 必需)
+				"open_interest",        // 持倉量分析 (OI 必需 - 修正了這裡)
+				"funding_rate",         // 資金費率 (修正了這裡，原為 FundingRate)
+				"market_condition",     // 市場狀態 (趨勢/震盪)
 			},
 			Format:           "markdown",
-			IncludeBTC:       true,
-			IncludeAccount:   true,
-			IncludePositions: true,
-			IncludeRAG:       true,
+			IncludeBTC:       true, // 必需：用於判斷【崩盤/拉升模式】
+			IncludeAccount:   true, // 必需：用於計算保證金和開倉數量
+			IncludePositions: true, // 必需：用於判斷持倉上限和先平後開
+			IncludeRAG:       false,
 		},
-
 		// 林凡只做多策略配置
 		"林凡_只做多": {
 			PromptName: "林凡_只做多",
@@ -281,22 +280,13 @@ func GetPromptDataConfig(promptName string) *PromptDataConfig {
 	return configs["default"]
 }
 
-// GetDataConfigByTraderName 根据交易员名称获取数据配置
-// 支持从prompt模板名称中提取交易员名称（如 "1bxxx_林凡_多空" -> "林凡_多空"）
+// GetDataConfigByTraderName 根据prompt模板名称获取数据配置
+// 简化逻辑：直接使用prompt模板名称映射到配置，不做复杂提取
+// 例如: "1bxxx" -> 直接查找 "1bxxx" 配置
 func GetDataConfigByTraderName(traderName string, promptTemplateName string) *PromptDataConfig {
 	// 优先使用prompt模板名称（如果提供）
 	if promptTemplateName != "" && promptTemplateName != "default" {
-		// 尝试从模板名称中提取配置名称
-		// 例如: "1bxxx_林凡_多空" -> "林凡_多空"
-		parts := strings.Split(promptTemplateName, "_")
-		if len(parts) >= 2 {
-			// 取最后两部分作为配置名称
-			configName := strings.Join(parts[len(parts)-2:], "_")
-			if config := GetPromptDataConfig(configName); config != nil && config.PromptName != "default" {
-				return config
-			}
-		}
-		// 如果提取失败，尝试直接使用模板名称
+		// 直接使用模板名称查找配置
 		if config := GetPromptDataConfig(promptTemplateName); config != nil && config.PromptName != "default" {
 			return config
 		}
@@ -304,7 +294,7 @@ func GetDataConfigByTraderName(traderName string, promptTemplateName string) *Pr
 
 	// 如果提供了交易员名称，尝试匹配
 	if traderName != "" {
-		// 尝试直接匹配交易员名称
+		// 直接匹配交易员名称
 		if config := GetPromptDataConfig(traderName); config != nil && config.PromptName != "default" {
 			return config
 		}
@@ -441,16 +431,22 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 
 	// 多时间框架数据
 	if mtf, ok := filteredData["multi_timeframe"].(*MultiTimeframeData); ok && mtf != nil {
-		sb.WriteString("⏰ 多时间框架:\n")
+		sb.WriteString("⏰ 多时间框架: (趋势方向=bullish看涨/bearish看跌/neutral中性, 强度=0-100信号强度, ATR14=波动率用于止损止盈计算)\n")
+		sb.WriteString("   ⚠️ 波段高低点数组顺序: 从前向后(最早→最新), 最后一个元素=最新波段, 第一个元素=最早波段\n")
+		sb.WriteString("   ⚠️ 结构说明: 高点抬高+低点抬高=上升趋势, 高点降低+低点降低=下降趋势, 高点=阻力位, 低点=支撑位\n")
 		if mtf.Timeframe15m != nil {
 			sb.WriteString(fmt.Sprintf("   • 15m: %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f",
 				mtf.Timeframe15m.TrendDirection, mtf.Timeframe15m.SignalStrength,
 				mtf.Timeframe15m.EMA20, mtf.Timeframe15m.MACD, mtf.Timeframe15m.RSI7))
+			if mtf.Timeframe15m.ATR14 > 0 {
+				sb.WriteString(fmt.Sprintf(" | ATR14:%.4f", mtf.Timeframe15m.ATR14))
+			}
 			if mtf.Timeframe15m.MarketStructure != nil {
-				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d/低点%d)",
+				highCount := len(mtf.Timeframe15m.MarketStructure.SwingHighs)
+				lowCount := len(mtf.Timeframe15m.MarketStructure.SwingLows)
+				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d个/低点%d个, 最新高点=第%d个, 最新低点=第%d个)",
 					mtf.Timeframe15m.MarketStructure.CurrentBias,
-					len(mtf.Timeframe15m.MarketStructure.SwingHighs),
-					len(mtf.Timeframe15m.MarketStructure.SwingLows)))
+					highCount, lowCount, highCount, lowCount))
 			}
 			sb.WriteString("\n")
 		}
@@ -458,11 +454,15 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 			sb.WriteString(fmt.Sprintf("   • 1h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f",
 				mtf.Timeframe1h.TrendDirection, mtf.Timeframe1h.SignalStrength,
 				mtf.Timeframe1h.EMA20, mtf.Timeframe1h.MACD, mtf.Timeframe1h.RSI7))
+			if mtf.Timeframe1h.ATR14 > 0 {
+				sb.WriteString(fmt.Sprintf(" | ATR14:%.4f", mtf.Timeframe1h.ATR14))
+			}
 			if mtf.Timeframe1h.MarketStructure != nil {
-				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d/低点%d)",
+				highCount := len(mtf.Timeframe1h.MarketStructure.SwingHighs)
+				lowCount := len(mtf.Timeframe1h.MarketStructure.SwingLows)
+				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d个/低点%d个, 最新高点=第%d个, 最新低点=第%d个)",
 					mtf.Timeframe1h.MarketStructure.CurrentBias,
-					len(mtf.Timeframe1h.MarketStructure.SwingHighs),
-					len(mtf.Timeframe1h.MarketStructure.SwingLows)))
+					highCount, lowCount, highCount, lowCount))
 			}
 			sb.WriteString("\n")
 		}
@@ -470,11 +470,15 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 			sb.WriteString(fmt.Sprintf("   • 4h:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f",
 				mtf.Timeframe4h.TrendDirection, mtf.Timeframe4h.SignalStrength,
 				mtf.Timeframe4h.EMA20, mtf.Timeframe4h.MACD, mtf.Timeframe4h.RSI7))
+			if mtf.Timeframe4h.ATR14 > 0 {
+				sb.WriteString(fmt.Sprintf(" | ATR14:%.4f", mtf.Timeframe4h.ATR14))
+			}
 			if mtf.Timeframe4h.MarketStructure != nil {
-				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d/低点%d)",
+				highCount := len(mtf.Timeframe4h.MarketStructure.SwingHighs)
+				lowCount := len(mtf.Timeframe4h.MarketStructure.SwingLows)
+				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d个/低点%d个, 最新高点=第%d个, 最新低点=第%d个)",
 					mtf.Timeframe4h.MarketStructure.CurrentBias,
-					len(mtf.Timeframe4h.MarketStructure.SwingHighs),
-					len(mtf.Timeframe4h.MarketStructure.SwingLows)))
+					highCount, lowCount, highCount, lowCount))
 			}
 			sb.WriteString("\n")
 		}
@@ -482,11 +486,15 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 			sb.WriteString(fmt.Sprintf("   • 1d:  %s(强度%d) | EMA20:%.4f | MACD:%.4f | RSI:%.1f",
 				mtf.Timeframe1d.TrendDirection, mtf.Timeframe1d.SignalStrength,
 				mtf.Timeframe1d.EMA20, mtf.Timeframe1d.MACD, mtf.Timeframe1d.RSI7))
+			if mtf.Timeframe1d.ATR14 > 0 {
+				sb.WriteString(fmt.Sprintf(" | ATR14:%.4f", mtf.Timeframe1d.ATR14))
+			}
 			if mtf.Timeframe1d.MarketStructure != nil {
-				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d/低点%d)",
+				highCount := len(mtf.Timeframe1d.MarketStructure.SwingHighs)
+				lowCount := len(mtf.Timeframe1d.MarketStructure.SwingLows)
+				sb.WriteString(fmt.Sprintf(" | 结构:%s(高点%d个/低点%d个, 最新高点=第%d个, 最新低点=第%d个)",
 					mtf.Timeframe1d.MarketStructure.CurrentBias,
-					len(mtf.Timeframe1d.MarketStructure.SwingHighs),
-					len(mtf.Timeframe1d.MarketStructure.SwingLows)))
+					highCount, lowCount, highCount, lowCount))
 			}
 			sb.WriteString("\n")
 		}
@@ -494,7 +502,7 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 
 	// 斐波那契水平
 	if fib, ok := filteredData["fibonacci"].(*FibLevels); ok && fib != nil {
-		sb.WriteString("📐 斐波那契水平:\n")
+		sb.WriteString("📐 斐波那契水平: (回撤位用于判断支撑阻力, OTE区间=0.618-0.705是回调入场最佳区域)\n")
 		sb.WriteString(fmt.Sprintf("   • 0.5中线: %.4f | 0.618: %.4f | 0.705: %.4f\n",
 			fib.Level500, fib.Level618, fib.Level705))
 		sb.WriteString(fmt.Sprintf("   • OTE区间: %.4f - %.4f\n",
@@ -503,24 +511,38 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 
 	// 市场结构（日线，用于大周期分析）
 	if ms, ok := filteredData["market_structure"].(*MarketStructure); ok && ms != nil {
-		sb.WriteString("🏗️ 市场结构（日线）:\n")
-		sb.WriteString(fmt.Sprintf("   • 偏向: %s | 波段高点: %d | 波段低点: %d\n",
-			ms.CurrentBias, len(ms.SwingHighs), len(ms.SwingLows)))
-		if len(ms.SwingHighs) > 0 && len(ms.SwingLows) > 0 {
-			sb.WriteString(fmt.Sprintf("   • 最近波段: %.4f → %.4f\n",
-				ms.SwingHighs[len(ms.SwingHighs)-1],
-				ms.SwingLows[len(ms.SwingLows)-1]))
+		sb.WriteString("🏗️ 市场结构（日线）: (偏向=bullish看涨/bearish看跌/neutral中性)\n")
+		highCount := len(ms.SwingHighs)
+		lowCount := len(ms.SwingLows)
+		sb.WriteString(fmt.Sprintf("   • 偏向: %s | 波段高点: %d个 | 波段低点: %d个\n",
+			ms.CurrentBias, highCount, lowCount))
+		if highCount > 0 && lowCount > 0 {
+			latestHighIdx := highCount
+			latestLowIdx := lowCount
+			sb.WriteString(fmt.Sprintf("   • 最近波段: 高点%.4f(第%d个) → 低点%.4f(第%d个)\n",
+				ms.SwingHighs[highCount-1], latestHighIdx,
+				ms.SwingLows[lowCount-1], latestLowIdx))
+			// 显示更多波段信息（如果有）
+			if highCount > 1 {
+				prevHighIdx := highCount - 1
+				sb.WriteString(fmt.Sprintf("   • 前一个波段高点: %.4f(第%d个)", ms.SwingHighs[highCount-2], prevHighIdx))
+				if lowCount > 1 {
+					prevLowIdx := lowCount - 1
+					sb.WriteString(fmt.Sprintf(" | 前一个波段低点: %.4f(第%d个)", ms.SwingLows[lowCount-2], prevLowIdx))
+				}
+				sb.WriteString("\n")
+			}
 		}
 	}
 
 	// 成交量分析
 	if rvol, ok := filteredData["rvol"].(float64); ok {
-		sb.WriteString(fmt.Sprintf("📊 相对成交量(RVol): %.2fx (当前/20均量)\n", rvol))
+		sb.WriteString(fmt.Sprintf("📊 相对成交量(RVol): %.2fx (当前/20均量, >1.5表示放量, <0.5表示缩量)\n", rvol))
 	}
 
 	// 形态识别
 	if patterns, ok := filteredData["patterns"].(*PatternRecognition); ok && patterns != nil && len(patterns.Patterns) > 0 {
-		sb.WriteString("🕯️ 形态识别:\n")
+		sb.WriteString("🕯️ 形态识别: (K线形态用于入场信号, bullish=看涨, bearish=看跌, 置信度越高信号越强)\n")
 		for _, p := range patterns.Patterns {
 			sb.WriteString(fmt.Sprintf("   • %s (%s) - %s - 置信度%.0f%%\n",
 				p.DisplayName, p.Timeframe, p.Side, p.Confidence*100))
@@ -529,7 +551,7 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 
 	// 市场状态
 	if condition, ok := filteredData["market_condition"].(*MarketCondition); ok && condition != nil {
-		sb.WriteString(fmt.Sprintf("🌊 市场状态: %s (置信度: %d%%)\n",
+		sb.WriteString(fmt.Sprintf("🌊 市场状态: %s (置信度: %d%%, trending=趋势市可交易, ranging=震荡市避免开仓, volatile=波动市谨慎)\n",
 			condition.Condition, condition.Confidence))
 	}
 
@@ -542,7 +564,19 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 		if oi.Change4h != 0 {
 			sb.WriteString(fmt.Sprintf(" | 4h变化: %+.2f%%", oi.Change4h))
 		}
-		sb.WriteString("\n")
+		sb.WriteString(" (价格跌+OI涨=主动做空信号强, 价格跌+OI跌=多头止损动能弱)\n")
+	}
+
+	// 资金费率数据
+	if fr, ok := filteredData["funding_rate"].(*FundingRateData); ok && fr != nil {
+		sb.WriteString(fmt.Sprintf("💵 资金费率: %.4f", fr.Latest))
+		if fr.Change1h != 0 {
+			sb.WriteString(fmt.Sprintf(" | 1h变化: %+.2f基点", fr.Change1h))
+		}
+		if fr.Change4h != 0 {
+			sb.WriteString(fmt.Sprintf(" | 4h变化: %+.2f基点", fr.Change4h))
+		}
+		sb.WriteString(" (正费率=做多付费, 负费率=做空付费, 费率上升=做多情绪增强)\n")
 	}
 
 	return sb.String()

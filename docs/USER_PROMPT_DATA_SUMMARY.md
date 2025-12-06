@@ -231,6 +231,7 @@
 | `SwingHighs` | []float64 | 波段高点数组 |
 | `SwingLows` | []float64 | 波段低点数组 |
 | `CurrentBias` | string | 当前偏向（bullish/bearish/neutral） |
+| `FibLevels` | *FibLevels | 斐波那契水平（可选） |
 
 **✅ 更新**：现在**每个时间框架都有独立的 MarketStructure**：
 - `TimeframeData.MarketStructure` - 每个时间框架（15m/1h/4h/1d）都有独立的波段高低点
@@ -272,13 +273,12 @@
 
 ## 🎯 不同策略的数据需求
 
-### 林凡多空策略
+### 1bxxx策略
 **需要的数据**:
 - ✅ 基础价格（判断强弱）
 - ✅ 技术指标（趋势确认）
 - ✅ 多时间框架（大周期确认）
 - ✅ 市场结构（趋势判断）
-- ✅ 斐波那契（OTE入场）
 - ✅ 形态识别（入场信号）
 - ✅ 成交量（S2突破确认）
 - ✅ 持仓量（强弱判断）

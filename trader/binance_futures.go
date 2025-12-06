@@ -80,6 +80,15 @@ func (t *FuturesTrader) GetBalance() (map[string]interface{}, error) {
 	return result, nil
 }
 
+// ClearBalanceCache 清除余额缓存，强制下次调用 GetBalance 时刷新
+func (t *FuturesTrader) ClearBalanceCache() {
+	t.balanceCacheMutex.Lock()
+	t.cachedBalance = nil
+	t.balanceCacheTime = time.Time{} // 设置为零值，强制过期
+	t.balanceCacheMutex.Unlock()
+	log.Printf("  ✓ 已清除余额缓存，下次将强制刷新")
+}
+
 // GetPositions 获取所有持仓（带缓存）
 func (t *FuturesTrader) GetPositions() ([]map[string]interface{}, error) {
 	// 先检查缓存是否有效
@@ -325,18 +334,29 @@ func (t *FuturesTrader) CloseLong(symbol string, quantity float64) (map[string]i
 	if quantity == 0 {
 		positions, err := t.GetPositions()
 		if err != nil {
-			return nil, err
+			// 即使获取失败，也清除缓存，避免缓存导致的问题
+			t.clearPositionsCache()
+			return nil, fmt.Errorf("获取持仓失败: %w", err)
 		}
 
+		hasPosition := false
 		for _, pos := range positions {
 			if pos["symbol"] == symbol && pos["side"] == "long" {
+				hasPosition = true
 				quantity = pos["positionAmt"].(float64)
 				break
 			}
 		}
 
-		if quantity == 0 {
-			return nil, fmt.Errorf("没有找到 %s 的多仓", symbol)
+		// 如果没有持仓，清除缓存并返回成功（可能已经被平掉，比如止损触发）
+		if !hasPosition || quantity == 0 {
+			t.clearPositionsCache()
+			log.Printf("  ℹ️ %s 没有多仓，可能已经被平掉", symbol)
+			return map[string]interface{}{
+				"orderId": int64(0),
+				"symbol":  symbol,
+				"status":  "ALREADY_CLOSED",
+			}, nil
 		}
 	}
 
@@ -355,6 +375,10 @@ func (t *FuturesTrader) CloseLong(symbol string, quantity float64) (map[string]i
 		Quantity(quantityStr).
 		Do(context.Background())
 
+	// ⚠️ 关键：无论平仓成功或失败，都清除缓存，避免缓存导致的问题
+	// 如果平仓失败，可能是持仓已不存在，清除缓存后下次会重新获取
+	defer t.clearPositionsCache()
+
 	if err != nil {
 		return nil, fmt.Errorf("平多仓失败: %w", err)
 	}
@@ -365,10 +389,6 @@ func (t *FuturesTrader) CloseLong(symbol string, quantity float64) (map[string]i
 	if err := t.CancelAllOrders(symbol); err != nil {
 		log.Printf("  ⚠ 取消挂单失败: %v", err)
 	}
-
-	// ⚠️ 关键修复：清除仓位缓存，确保下次 GetPositions 时获取最新数据
-	// 避免缓存导致系统认为还有仓位，从而继续将该币种留在候选列表中
-	t.clearPositionsCache()
 
 	result := make(map[string]interface{})
 	result["orderId"] = order.OrderID
@@ -383,18 +403,29 @@ func (t *FuturesTrader) CloseShort(symbol string, quantity float64) (map[string]
 	if quantity == 0 {
 		positions, err := t.GetPositions()
 		if err != nil {
-			return nil, err
+			// 即使获取失败，也清除缓存，避免缓存导致的问题
+			t.clearPositionsCache()
+			return nil, fmt.Errorf("获取持仓失败: %w", err)
 		}
 
+		hasPosition := false
 		for _, pos := range positions {
 			if pos["symbol"] == symbol && pos["side"] == "short" {
+				hasPosition = true
 				quantity = -pos["positionAmt"].(float64) // 空仓数量是负的，取绝对值
 				break
 			}
 		}
 
-		if quantity == 0 {
-			return nil, fmt.Errorf("没有找到 %s 的空仓", symbol)
+		// 如果没有持仓，清除缓存并返回成功（可能已经被平掉，比如止损触发）
+		if !hasPosition || quantity == 0 {
+			t.clearPositionsCache()
+			log.Printf("  ℹ️ %s 没有空仓，可能已经被平掉", symbol)
+			return map[string]interface{}{
+				"orderId": int64(0),
+				"symbol":  symbol,
+				"status":  "ALREADY_CLOSED",
+			}, nil
 		}
 	}
 
@@ -413,6 +444,10 @@ func (t *FuturesTrader) CloseShort(symbol string, quantity float64) (map[string]
 		Quantity(quantityStr).
 		Do(context.Background())
 
+	// ⚠️ 关键：无论平仓成功或失败，都清除缓存，避免缓存导致的问题
+	// 如果平仓失败，可能是持仓已不存在，清除缓存后下次会重新获取
+	defer t.clearPositionsCache()
+
 	if err != nil {
 		return nil, fmt.Errorf("平空仓失败: %w", err)
 	}
@@ -423,10 +458,6 @@ func (t *FuturesTrader) CloseShort(symbol string, quantity float64) (map[string]
 	if err := t.CancelAllOrders(symbol); err != nil {
 		log.Printf("  ⚠ 取消挂单失败: %v", err)
 	}
-
-	// ⚠️ 关键修复：清除仓位缓存，确保下次 GetPositions 时获取最新数据
-	// 避免缓存导致系统认为还有仓位，从而继续将该币种留在候选列表中
-	t.clearPositionsCache()
 
 	result := make(map[string]interface{})
 	result["orderId"] = order.OrderID
@@ -444,6 +475,11 @@ func (t *FuturesTrader) clearPositionsCache() {
 	log.Printf("  🔄 已清除仓位缓存，下次将获取最新数据")
 }
 
+// ClearPositionsCache 公开方法：清除仓位缓存（供外部调用）
+func (t *FuturesTrader) ClearPositionsCache() {
+	t.clearPositionsCache()
+}
+
 // CancelAllOrders 取消该币种的所有挂单
 func (t *FuturesTrader) CancelAllOrders(symbol string) error {
 	err := t.client.NewCancelAllOpenOrdersService().
@@ -455,6 +491,40 @@ func (t *FuturesTrader) CancelAllOrders(symbol string) error {
 	}
 
 	log.Printf("  ✓ 已取消 %s 的所有挂单", symbol)
+	return nil
+}
+
+// CancelOrdersByType 取消指定币种和类型的订单
+func (t *FuturesTrader) CancelOrdersByType(symbol string, orderType futures.OrderType) error {
+	// 查询该币种的所有挂单
+	orders, err := t.client.NewListOpenOrdersService().
+		Symbol(symbol).
+		Do(context.Background())
+
+	if err != nil {
+		return fmt.Errorf("查询挂单失败: %w", err)
+	}
+
+	// 筛选并取消指定类型的订单
+	canceledCount := 0
+	for _, order := range orders {
+		if order.Type == orderType {
+			_, err := t.client.NewCancelOrderService().
+				Symbol(symbol).
+				OrderID(order.OrderID).
+				Do(context.Background())
+			if err != nil {
+				log.Printf("  ⚠ 取消订单失败 (orderID=%d, type=%s): %v", order.OrderID, order.Type, err)
+			} else {
+				canceledCount++
+			}
+		}
+	}
+
+	if canceledCount > 0 {
+		log.Printf("  ✓ 已取消 %s 的 %d 个 %s 订单", symbol, canceledCount, orderType)
+	}
+
 	return nil
 }
 
@@ -487,6 +557,12 @@ func (t *FuturesTrader) CalculatePositionSize(balance, riskPercent, price float6
 
 // SetStopLoss 设置止损单
 func (t *FuturesTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
+	// ⚠️ 关键：先检查并取消旧的止损单，避免多个止损单同时存在
+	if err := t.CancelOrdersByType(symbol, futures.OrderTypeStopMarket); err != nil {
+		log.Printf("  ⚠ 取消旧止损单失败（继续设置新止损）: %v", err)
+		// 继续执行，不因取消失败而阻止设置新止损
+	}
+
 	var side futures.SideType
 	var posSide futures.PositionSideType
 
@@ -525,6 +601,12 @@ func (t *FuturesTrader) SetStopLoss(symbol string, positionSide string, quantity
 
 // SetTakeProfit 设置止盈单
 func (t *FuturesTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
+	// ⚠️ 关键：先检查并取消旧的止盈单，避免多个止盈单同时存在
+	if err := t.CancelOrdersByType(symbol, futures.OrderTypeTakeProfitMarket); err != nil {
+		log.Printf("  ⚠ 取消旧止盈单失败（继续设置新止盈）: %v", err)
+		// 继续执行，不因取消失败而阻止设置新止盈
+	}
+
 	var side futures.SideType
 	var posSide futures.PositionSideType
 
@@ -643,25 +725,15 @@ func (t *FuturesTrader) FormatQuantity(symbol string, quantity float64) (string,
 
 // GetOrderTrades 获取订单的成交记录
 func (t *FuturesTrader) GetOrderTrades(symbol string, orderID int64) ([]map[string]interface{}, error) {
-	ctx := context.Background()
+	// 注意：Binance Futures API的userTrades接口不支持直接通过orderId查询
+	// 我们需要查询最近的交易记录，然后筛选出匹配的订单ID
 
-	// 获取用户交易历史，筛选出指定订单ID的成交记录
-	// 注意：Binance API的userTrades接口可以通过orderId筛选，但需要先获取最近的交易记录
-	// 我们使用时间范围查询，然后筛选出匹配的订单ID
+	// 由于go-binance库的限制，这里提供一个基本实现框架
+	// 实际查询逻辑建议使用tools中的实现，或直接调用HTTP API
+	// 查询时间窗口建议：最近24小时（扩大时间窗口，确保能找到订单）
 
-	// 查询最近1小时的交易记录（通常订单会在几分钟内成交）
-	startTime := time.Now().Add(-1 * time.Hour).UnixMilli()
-	endTime := time.Now().UnixMilli()
-
-	// 使用go-binance库获取用户交易记录
-	// 注意：go-binance库可能没有直接的方法，我们需要使用HTTP请求
-	// 但为了简化，我们先尝试使用现有的方法
-
-	// 由于go-binance库的限制，我们需要直接调用API
-	// 这里返回一个接口，让调用方知道需要实现这个方法
-	// 实际实现会在tools中提供
-
-	return nil, fmt.Errorf("GetOrderTrades需要实现，请使用tools中的方法")
+	// 返回错误提示，建议使用tools中的方法或HTTP API直接查询
+	return nil, fmt.Errorf("GetOrderTrades需要完整实现，建议使用tools/trade_checker.go中的GetOrderTrades方法，或通过HTTP API查询/fapi/v1/userTrades接口并筛选orderId=%d", orderID)
 }
 
 // 辅助函数

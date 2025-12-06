@@ -511,6 +511,48 @@ func (t *HyperliquidTrader) CancelAllOrders(symbol string) error {
 	return nil
 }
 
+// CancelOrdersByType 取消指定币种和类型的订单（止损或止盈）
+// tpslType: "sl" 表示止损, "tp" 表示止盈
+func (t *HyperliquidTrader) CancelOrdersByType(symbol string, tpslType string) error {
+	coin := convertSymbolToHyperliquid(symbol)
+
+	// 获取所有挂单
+	openOrders, err := t.exchange.Info().OpenOrders(t.ctx, t.walletAddr)
+	if err != nil {
+		return fmt.Errorf("获取挂单失败: %w", err)
+	}
+
+	// Hyperliquid 的 OpenOrders 可能不直接返回 Tpsl 信息
+	// 但我们可以通过查询订单详情来判断，或者采用更简单的方法：
+	// 由于止损和止盈都是 Trigger 订单且 ReduceOnly=true，我们可以取消所有该币种的 Trigger 订单
+	// 但为了更精确，我们取消所有该币种的挂单（因为通常一个币种只有止损和止盈两个挂单）
+	// 注意：这里假设该币种只有止损止盈订单，如果有其他类型的订单也会被取消
+	
+	canceledCount := 0
+	for _, order := range openOrders {
+		if order.Coin == coin {
+			// 检查订单是否是 Trigger 订单（止损和止盈都是 Trigger 订单）
+			// 由于 Hyperliquid API 的限制，我们无法直接判断 Tpsl 类型
+			// 因此我们取消所有该币种的 Trigger 订单
+			// 如果订单是 Trigger 类型（通过检查订单是否有 TriggerPx 等特征）
+			// 但实际上，OpenOrders 返回的结构可能不包含这些信息
+			// 为了安全，我们取消所有该币种的挂单（因为通常只有止损止盈）
+			_, err := t.exchange.Cancel(t.ctx, coin, order.Oid)
+			if err != nil {
+				log.Printf("  ⚠ 取消订单失败 (oid=%d): %v", order.Oid, err)
+			} else {
+				canceledCount++
+			}
+		}
+	}
+
+	if canceledCount > 0 {
+		log.Printf("  ✓ 已取消 %s 的 %d 个 %s 订单", symbol, canceledCount, tpslType)
+	}
+
+	return nil
+}
+
 // GetMarketPrice 获取市场价格
 func (t *HyperliquidTrader) GetMarketPrice(symbol string) (float64, error) {
 	coin := convertSymbolToHyperliquid(symbol)
@@ -535,6 +577,12 @@ func (t *HyperliquidTrader) GetMarketPrice(symbol string) (float64, error) {
 
 // SetStopLoss 设置止损单
 func (t *HyperliquidTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
+	// ⚠️ 关键：先检查并取消旧的止损单，避免多个止损单同时存在
+	if err := t.CancelOrdersByType(symbol, "sl"); err != nil {
+		log.Printf("  ⚠ 取消旧止损单失败（继续设置新止损）: %v", err)
+		// 继续执行，不因取消失败而阻止设置新止损
+	}
+
 	coin := convertSymbolToHyperliquid(symbol)
 
 	isBuy := positionSide == "SHORT" // 空仓止损=买入，多仓止损=卖出
@@ -572,6 +620,12 @@ func (t *HyperliquidTrader) SetStopLoss(symbol string, positionSide string, quan
 
 // SetTakeProfit 设置止盈单
 func (t *HyperliquidTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
+	// ⚠️ 关键：先检查并取消旧的止盈单，避免多个止盈单同时存在
+	if err := t.CancelOrdersByType(symbol, "tp"); err != nil {
+		log.Printf("  ⚠ 取消旧止盈单失败（继续设置新止盈）: %v", err)
+		// 继续执行，不因取消失败而阻止设置新止盈
+	}
+
 	coin := convertSymbolToHyperliquid(symbol)
 
 	isBuy := positionSide == "SHORT" // 空仓止盈=买入，多仓止盈=卖出

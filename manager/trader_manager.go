@@ -227,6 +227,7 @@ func (tm *TraderManager) addTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		UseQwen:               aiModelCfg.Provider == "qwen",
 		DeepSeekKey:           "",
 		QwenKey:               "",
+		SiliconFlowKey:        "",
 		CustomAPIURL:          aiModelCfg.CustomAPIURL,    // 自定义API URL
 		CustomModelName:       aiModelCfg.CustomModelName, // 自定义模型名称
 		ScanInterval:          time.Duration(traderCfg.ScanIntervalMinutes) * time.Minute,
@@ -260,6 +261,8 @@ func (tm *TraderManager) addTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		traderConfig.QwenKey = aiModelCfg.APIKey
 	} else if aiModelCfg.Provider == "deepseek" {
 		traderConfig.DeepSeekKey = aiModelCfg.APIKey
+	} else if aiModelCfg.Provider == "siliconflow" {
+		traderConfig.SiliconFlowKey = aiModelCfg.APIKey
 	}
 
 	// 创建trader实例
@@ -335,6 +338,7 @@ func (tm *TraderManager) AddTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		UseQwen:               aiModelCfg.Provider == "qwen",
 		DeepSeekKey:           "",
 		QwenKey:               "",
+		SiliconFlowKey:        "",
 		CustomAPIURL:          aiModelCfg.CustomAPIURL,    // 自定义API URL
 		CustomModelName:       aiModelCfg.CustomModelName, // 自定义模型名称
 		ScanInterval:          time.Duration(traderCfg.ScanIntervalMinutes) * time.Minute,
@@ -367,6 +371,8 @@ func (tm *TraderManager) AddTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		traderConfig.QwenKey = aiModelCfg.APIKey
 	} else if aiModelCfg.Provider == "deepseek" {
 		traderConfig.DeepSeekKey = aiModelCfg.APIKey
+	} else if aiModelCfg.Provider == "siliconflow" {
+		traderConfig.SiliconFlowKey = aiModelCfg.APIKey
 	}
 
 	// 创建trader实例
@@ -884,6 +890,10 @@ func (tm *TraderManager) loadSingleTrader(traderCfg *config.TraderRecord, aiMode
 		CustomAPIURL:         aiModelCfg.CustomAPIURL,    // 自定义API URL
 		CustomModelName:      aiModelCfg.CustomModelName, // 自定义模型名称
 		UseQwen:              aiModelCfg.Provider == "qwen",
+		DeepSeekKey:          "",
+		QwenKey:              "",
+		SiliconFlowKey:       "",
+		CustomAPIKey:         "",
 		MaxDailyLoss:         maxDailyLoss,
 		MaxDrawdown:          maxDrawdown,
 		StopTradingTime:      time.Duration(stopTradingMinutes) * time.Minute,
@@ -911,8 +921,38 @@ func (tm *TraderManager) loadSingleTrader(traderCfg *config.TraderRecord, aiMode
 	// 根据AI模型设置API密钥
 	if aiModelCfg.Provider == "qwen" {
 		traderConfig.QwenKey = aiModelCfg.APIKey
+		if len(aiModelCfg.APIKey) > 8 {
+			log.Printf("🔑 [%s] 设置 Qwen API Key: %s...%s", traderCfg.Name,
+				aiModelCfg.APIKey[:4], aiModelCfg.APIKey[len(aiModelCfg.APIKey)-4:])
+		} else {
+			log.Printf("⚠️ [%s] Qwen API Key 为空或过短", traderCfg.Name)
+		}
 	} else if aiModelCfg.Provider == "deepseek" {
 		traderConfig.DeepSeekKey = aiModelCfg.APIKey
+		if len(aiModelCfg.APIKey) > 8 {
+			log.Printf("🔑 [%s] 设置 DeepSeek API Key: %s...%s", traderCfg.Name,
+				aiModelCfg.APIKey[:4], aiModelCfg.APIKey[len(aiModelCfg.APIKey)-4:])
+		} else {
+			log.Printf("⚠️ [%s] DeepSeek API Key 为空或过短", traderCfg.Name)
+		}
+	} else if aiModelCfg.Provider == "siliconflow" {
+		traderConfig.SiliconFlowKey = aiModelCfg.APIKey
+		if len(aiModelCfg.APIKey) > 8 {
+			log.Printf("🔑 [%s] 设置 SiliconFlow API Key: %s...%s", traderCfg.Name,
+				aiModelCfg.APIKey[:4], aiModelCfg.APIKey[len(aiModelCfg.APIKey)-4:])
+		} else {
+			log.Printf("⚠️ [%s] SiliconFlow API Key 为空或过短", traderCfg.Name)
+		}
+	} else if aiModelCfg.Provider == "custom" {
+		traderConfig.CustomAPIKey = aiModelCfg.APIKey
+		if len(aiModelCfg.APIKey) > 8 {
+			log.Printf("🔑 [%s] 设置 Custom API Key: %s...%s", traderCfg.Name,
+				aiModelCfg.APIKey[:4], aiModelCfg.APIKey[len(aiModelCfg.APIKey)-4:])
+		} else {
+			log.Printf("⚠️ [%s] Custom API Key 为空或过短", traderCfg.Name)
+		}
+	} else {
+		log.Printf("⚠️ [%s] 未知的 AI Provider: %s", traderCfg.Name, aiModelCfg.Provider)
 	}
 
 	// 创建trader实例

@@ -17,9 +17,10 @@ import (
 type Provider string
 
 const (
-	ProviderDeepSeek Provider = "deepseek"
-	ProviderQwen     Provider = "qwen"
-	ProviderCustom   Provider = "custom"
+	ProviderDeepSeek    Provider = "deepseek"
+	ProviderQwen        Provider = "qwen"
+	ProviderSiliconFlow Provider = "siliconflow"
+	ProviderCustom      Provider = "custom"
 )
 
 // Client AI API配置
@@ -96,12 +97,37 @@ func (client *Client) SetQwenAPIKey(apiKey string, customURL string, customModel
 		client.Model = customModel
 		log.Printf("🔧 [MCP] Qwen 使用自定义 Model: %s", customModel)
 	} else {
-		client.Model = "qwen3-max" 
+		client.Model = "qwen3-max"
 		log.Printf("🔧 [MCP] Qwen 使用默认 Model: %s", client.Model)
 	}
 	// 打印 API Key 的前后各4位用于验证
 	if len(apiKey) > 8 {
 		log.Printf("🔧 [MCP] Qwen API Key: %s...%s", apiKey[:4], apiKey[len(apiKey)-4:])
+	}
+}
+
+// SetSiliconFlowAPIKey 设置SiliconFlow API密钥
+// customURL 为空时使用默认URL，customModel 为空时使用默认模型
+func (client *Client) SetSiliconFlowAPIKey(apiKey string, customURL string, customModel string) {
+	client.Provider = ProviderSiliconFlow
+	client.APIKey = apiKey
+	if customURL != "" {
+		client.BaseURL = customURL
+		log.Printf("🔧 [MCP] SiliconFlow 使用自定义 BaseURL: %s", customURL)
+	} else {
+		client.BaseURL = "https://api.siliconflow.cn/v1"
+		log.Printf("🔧 [MCP] SiliconFlow 使用默认 BaseURL: %s", client.BaseURL)
+	}
+	if customModel != "" {
+		client.Model = customModel
+		log.Printf("🔧 [MCP] SiliconFlow 使用自定义 Model: %s", customModel)
+	} else {
+		client.Model = "Pro/deepseek-ai/DeepSeek-V3.2"
+		log.Printf("🔧 [MCP] SiliconFlow 使用默认 Model: %s", client.Model)
+	}
+	// 打印 API Key 的前后各4位用于验证
+	if len(apiKey) > 8 {
+		log.Printf("🔧 [MCP] SiliconFlow API Key: %s...%s", apiKey[:4], apiKey[len(apiKey)-4:])
 	}
 }
 
@@ -134,7 +160,7 @@ func (client *Client) SetClient(Client Client) {
 // CallWithMessages 使用 system + user prompt 调用AI API（推荐）
 func (client *Client) CallWithMessages(systemPrompt, userPrompt string) (string, error) {
 	if client.APIKey == "" {
-		return "", fmt.Errorf("AI API密钥未设置，请先调用 SetDeepSeekAPIKey() 或 SetQwenAPIKey()")
+		return "", fmt.Errorf("AI API密钥未设置，请先调用 SetDeepSeekAPIKey()、SetQwenAPIKey()、SetSiliconFlowAPIKey() 或 SetCustomAPI()")
 	}
 
 	// 重试配置
@@ -242,6 +268,9 @@ func (client *Client) callOnce(systemPrompt, userPrompt string) (string, error) 
 		// 阿里云Qwen使用API-Key认证
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", client.APIKey))
 		// 注意：如果使用的不是兼容模式，可能需要不同的认证方式
+	case ProviderSiliconFlow:
+		// SiliconFlow使用Bearer Token认证
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", client.APIKey))
 	default:
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", client.APIKey))
 	}

@@ -12,7 +12,7 @@ type TraderConfig struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`  // 是否启用该trader
-	AIModel string `json:"ai_model"` // "qwen" or "deepseek"
+	AIModel string `json:"ai_model"` // "qwen", "deepseek", "siliconflow" or "custom"
 
 	// 交易平台选择（二选一）
 	Exchange string `json:"exchange"` // "binance" or "hyperliquid"
@@ -32,8 +32,9 @@ type TraderConfig struct {
 	AsterPrivateKey string `json:"aster_private_key,omitempty"` // Aster API钱包私钥
 
 	// AI配置
-	QwenKey     string `json:"qwen_key,omitempty"`
-	DeepSeekKey string `json:"deepseek_key,omitempty"`
+	QwenKey        string `json:"qwen_key,omitempty"`
+	DeepSeekKey    string `json:"deepseek_key,omitempty"`
+	SiliconFlowKey string `json:"siliconflow_key,omitempty"`
 
 	// 自定义AI API配置（支持任何OpenAI格式的API）
 	CustomAPIURL    string `json:"custom_api_url,omitempty"`
@@ -120,8 +121,8 @@ func (c *Config) Validate() error {
 		if trader.Name == "" {
 			return fmt.Errorf("trader[%d]: Name不能为空", i)
 		}
-		if trader.AIModel != "qwen" && trader.AIModel != "deepseek" && trader.AIModel != "custom" {
-			return fmt.Errorf("trader[%d]: ai_model必须是 'qwen', 'deepseek' 或 'custom'", i)
+		if trader.AIModel != "qwen" && trader.AIModel != "deepseek" && trader.AIModel != "siliconflow" && trader.AIModel != "custom" {
+			return fmt.Errorf("trader[%d]: ai_model必须是 'qwen', 'deepseek', 'siliconflow' 或 'custom'", i)
 		}
 
 		// 验证交易平台配置
@@ -152,6 +153,9 @@ func (c *Config) Validate() error {
 		}
 		if trader.AIModel == "deepseek" && trader.DeepSeekKey == "" {
 			return fmt.Errorf("trader[%d]: 使用DeepSeek时必须配置deepseek_key", i)
+		}
+		if trader.AIModel == "siliconflow" && trader.SiliconFlowKey == "" {
+			return fmt.Errorf("trader[%d]: 使用SiliconFlow时必须配置siliconflow_key", i)
 		}
 		if trader.AIModel == "custom" {
 			if trader.CustomAPIURL == "" {

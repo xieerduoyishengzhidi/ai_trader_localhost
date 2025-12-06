@@ -9,6 +9,8 @@ import (
 	"nofx/config"
 	"nofx/decision"
 	"nofx/manager"
+	"nofx/news"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -88,7 +90,7 @@ func (s *Server) setupRoutes() {
 		// 系统提示词模板管理（无需认证）
 		api.GET("/prompt-templates", s.handleGetPromptTemplates)
 		api.GET("/prompt-templates/:name", s.handleGetPromptTemplate)
-		
+
 		// 公开的竞赛数据（无需认证）
 		api.GET("/traders", s.handlePublicTraderList)
 		api.GET("/competition", s.handlePublicCompetition)
@@ -96,6 +98,10 @@ func (s *Server) setupRoutes() {
 		api.GET("/equity-history", s.handleEquityHistory)
 		api.POST("/equity-history-batch", s.handleEquityHistoryBatch)
 		api.GET("/traders/:id/public-config", s.handleGetPublicTraderConfig)
+
+		// 新闻模块（无需认证）
+		api.GET("/news/btc", s.handleBTCNews)
+		api.GET("/news/:currency", s.handleCurrencyNews)
 
 		// 需要认证的路由
 		protected := api.Group("/", s.authMiddleware())
@@ -168,7 +174,7 @@ func (s *Server) handleGetSystemConfig(c *gin.Context) {
 	if val, err := strconv.Atoi(altcoinLeverageStr); err == nil && val > 0 {
 		altcoinLeverage = val
 	}
-	
+
 	// 获取内测模式配置
 	betaModeStr, _ := s.database.GetSystemConfig("beta_mode")
 	betaMode := betaModeStr == "true"
@@ -531,14 +537,14 @@ func (s *Server) handleDeleteTrader(c *gin.Context) {
 func (s *Server) handleStartTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
-	
+
 	// 校验交易员是否属于当前用户
 	_, _, _, err := s.database.GetTraderConfig(userID, traderID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在或无访问权限"})
 		return
 	}
-	
+
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
@@ -574,14 +580,14 @@ func (s *Server) handleStartTrader(c *gin.Context) {
 func (s *Server) handleStopTrader(c *gin.Context) {
 	userID := c.GetString("user_id")
 	traderID := c.Param("id")
-	
+
 	// 校验交易员是否属于当前用户
 	_, _, _, err := s.database.GetTraderConfig(userID, traderID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在或无访问权限"})
 		return
 	}
-	
+
 	trader, err := s.traderManager.GetTrader(traderID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "交易员不存在"})
@@ -1581,7 +1587,7 @@ func (s *Server) handlePublicCompetition(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, competition)
 }
 
@@ -1594,7 +1600,7 @@ func (s *Server) handleTopTraders(c *gin.Context) {
 		})
 		return
 	}
-	
+
 	c.JSON(http.StatusOK, topTraders)
 }
 
@@ -1603,7 +1609,7 @@ func (s *Server) handleEquityHistoryBatch(c *gin.Context) {
 	var requestBody struct {
 		TraderIDs []string `json:"trader_ids"`
 	}
-	
+
 	// 尝试解析POST请求的JSON body
 	if err := c.ShouldBindJSON(&requestBody); err != nil {
 		// 如果JSON解析失败，尝试从query参数获取（兼容GET请求）
@@ -1617,13 +1623,13 @@ func (s *Server) handleEquityHistoryBatch(c *gin.Context) {
 				})
 				return
 			}
-			
+
 			traders, ok := topTraders["traders"].([]map[string]interface{})
 			if !ok {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "交易员数据格式错误"})
 				return
 			}
-			
+
 			// 提取trader IDs
 			traderIDs := make([]string, 0, len(traders))
 			for _, trader := range traders {
@@ -1631,24 +1637,24 @@ func (s *Server) handleEquityHistoryBatch(c *gin.Context) {
 					traderIDs = append(traderIDs, traderID)
 				}
 			}
-			
+
 			result := s.getEquityHistoryForTraders(traderIDs)
 			c.JSON(http.StatusOK, result)
 			return
 		}
-		
+
 		// 解析逗号分隔的trader IDs
 		requestBody.TraderIDs = strings.Split(traderIDsParam, ",")
 		for i := range requestBody.TraderIDs {
 			requestBody.TraderIDs[i] = strings.TrimSpace(requestBody.TraderIDs[i])
 		}
 	}
-	
+
 	// 限制最多20个交易员，防止请求过大
 	if len(requestBody.TraderIDs) > 20 {
 		requestBody.TraderIDs = requestBody.TraderIDs[:20]
 	}
-	
+
 	result := s.getEquityHistoryForTraders(requestBody.TraderIDs)
 	c.JSON(http.StatusOK, result)
 }
@@ -1658,31 +1664,31 @@ func (s *Server) getEquityHistoryForTraders(traderIDs []string) map[string]inter
 	result := make(map[string]interface{})
 	histories := make(map[string]interface{})
 	errors := make(map[string]string)
-	
+
 	for _, traderID := range traderIDs {
 		if traderID == "" {
 			continue
 		}
-		
+
 		trader, err := s.traderManager.GetTrader(traderID)
 		if err != nil {
 			errors[traderID] = "交易员不存在"
 			continue
 		}
-		
+
 		// 获取历史数据（用于对比展示，限制数据量）
 		records, err := trader.GetDecisionLogger().GetLatestRecords(500)
 		if err != nil {
 			errors[traderID] = fmt.Sprintf("获取历史数据失败: %v", err)
 			continue
 		}
-		
+
 		// 构建收益率历史数据
 		history := make([]map[string]interface{}, 0, len(records))
 		for _, record := range records {
 			// 计算总权益（余额+未实现盈亏）
 			totalEquity := record.AccountState.TotalBalance + record.AccountState.TotalUnrealizedProfit
-			
+
 			history = append(history, map[string]interface{}{
 				"timestamp":    record.Timestamp,
 				"total_equity": totalEquity,
@@ -1690,16 +1696,16 @@ func (s *Server) getEquityHistoryForTraders(traderIDs []string) map[string]inter
 				"balance":      record.AccountState.TotalBalance,
 			})
 		}
-		
+
 		histories[traderID] = history
 	}
-	
+
 	result["histories"] = histories
 	result["count"] = len(histories)
 	if len(errors) > 0 {
 		result["errors"] = errors
 	}
-	
+
 	return result
 }
 
@@ -1734,3 +1740,79 @@ func (s *Server) handleGetPublicTraderConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// handleBTCNews 获取 BTC 新闻
+func (s *Server) handleBTCNews(c *gin.Context) {
+	// 从系统配置获取 API Key（可以从环境变量或配置文件读取）
+	apiKey := s.getCryptoPanicAPIKey()
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "未配置 CryptoPanic API Key"})
+		return
+	}
+
+	// 获取 limit 参数
+	limit := 20
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	client := news.NewAPIClient(apiKey)
+	result, err := client.GetBTCNews(limit)
+	if err != nil {
+		log.Printf("❌ 获取 BTC 新闻失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取新闻失败: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// handleCurrencyNews 获取指定货币的新闻
+func (s *Server) handleCurrencyNews(c *gin.Context) {
+	currency := strings.ToUpper(c.Param("currency"))
+	if currency == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "货币代码不能为空"})
+		return
+	}
+
+	// 从系统配置获取 API Key
+	apiKey := s.getCryptoPanicAPIKey()
+	if apiKey == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "未配置 CryptoPanic API Key"})
+		return
+	}
+
+	// 获取 limit 参数
+	limit := 20
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	client := news.NewAPIClient(apiKey)
+	result, err := client.GetNews(currency, limit)
+	if err != nil {
+		log.Printf("❌ 获取 %s 新闻失败: %v", currency, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("获取新闻失败: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// getCryptoPanicAPIKey 从系统配置获取 CryptoPanic API Key
+func (s *Server) getCryptoPanicAPIKey() string {
+	// 优先从环境变量获取
+	if apiKey := os.Getenv("CRYPTOPANIC_API_KEY"); apiKey != "" {
+		return apiKey
+	}
+
+	// 从数据库系统配置获取
+	if apiKey, _ := s.database.GetSystemConfig("cryptopanic_api_key"); apiKey != "" {
+		return apiKey
+	}
+
+	return ""
+}

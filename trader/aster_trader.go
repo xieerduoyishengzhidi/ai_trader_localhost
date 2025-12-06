@@ -891,6 +891,12 @@ func (t *AsterTrader) GetMarketPrice(symbol string) (float64, error) {
 
 // SetStopLoss 设置止损
 func (t *AsterTrader) SetStopLoss(symbol string, positionSide string, quantity, stopPrice float64) error {
+	// ⚠️ 关键：先检查并取消旧的止损单，避免多个止损单同时存在
+	if err := t.CancelOrdersByType(symbol, "STOP_MARKET"); err != nil {
+		log.Printf("  ⚠ 取消旧止损单失败（继续设置新止损）: %v", err)
+		// 继续执行，不因取消失败而阻止设置新止损
+	}
+
 	side := "SELL"
 	if positionSide == "SHORT" {
 		side = "BUY"
@@ -932,6 +938,12 @@ func (t *AsterTrader) SetStopLoss(symbol string, positionSide string, quantity, 
 
 // SetTakeProfit 设置止盈
 func (t *AsterTrader) SetTakeProfit(symbol string, positionSide string, quantity, takeProfitPrice float64) error {
+	// ⚠️ 关键：先检查并取消旧的止盈单，避免多个止盈单同时存在
+	if err := t.CancelOrdersByType(symbol, "TAKE_PROFIT_MARKET"); err != nil {
+		log.Printf("  ⚠ 取消旧止盈单失败（继续设置新止盈）: %v", err)
+		// 继续执行，不因取消失败而阻止设置新止盈
+	}
+
 	side := "SELL"
 	if positionSide == "SHORT" {
 		side = "BUY"
@@ -979,6 +991,56 @@ func (t *AsterTrader) CancelAllOrders(symbol string) error {
 
 	_, err := t.request("DELETE", "/fapi/v3/allOpenOrders", params)
 	return err
+}
+
+// CancelOrdersByType 取消指定币种和类型的订单
+// orderType: "STOP_MARKET" 表示止损, "TAKE_PROFIT_MARKET" 表示止盈
+func (t *AsterTrader) CancelOrdersByType(symbol string, orderType string) error {
+	// 查询该币种的所有挂单
+	params := map[string]interface{}{
+		"symbol": symbol,
+	}
+
+	body, err := t.request("GET", "/fapi/v3/openOrders", params)
+	if err != nil {
+		return fmt.Errorf("查询挂单失败: %w", err)
+	}
+
+	// 解析订单列表
+	var orders []map[string]interface{}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return fmt.Errorf("解析订单列表失败: %w", err)
+	}
+
+	// 筛选并取消指定类型的订单
+	canceledCount := 0
+	for _, order := range orders {
+		if orderTypeStr, ok := order["type"].(string); ok && orderTypeStr == orderType {
+			orderID, ok := order["orderId"].(float64)
+			if !ok {
+				continue
+			}
+
+			// 取消订单
+			cancelParams := map[string]interface{}{
+				"symbol":  symbol,
+				"orderId": int64(orderID),
+			}
+
+			_, err := t.request("DELETE", "/fapi/v3/order", cancelParams)
+			if err != nil {
+				log.Printf("  ⚠ 取消订单失败 (orderID=%.0f, type=%s): %v", orderID, orderType, err)
+			} else {
+				canceledCount++
+			}
+		}
+	}
+
+	if canceledCount > 0 {
+		log.Printf("  ✓ 已取消 %s 的 %d 个 %s 订单", symbol, canceledCount, orderType)
+	}
+
+	return nil
 }
 
 // FormatQuantity 格式化数量（实现Trader接口）

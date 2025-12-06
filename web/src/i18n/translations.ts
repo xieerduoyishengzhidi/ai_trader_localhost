@@ -392,7 +392,7 @@ export const translations = {
     openSourceFeatures1: 'Fully open source code',
     openSourceFeatures2: 'Self-hosting deployment support',
     openSourceFeatures3: 'Custom AI prompts',
-    openSourceFeatures4: 'Multi-model support (DeepSeek, Qwen)',
+    openSourceFeatures4: 'Multi-model support (DeepSeek, Qwen, SiliconFlow)',
     multiAgentCompetition: 'Multi-Agent Intelligent Competition',
     multiAgentDesc:
       'AI strategies battle at high speed in sandbox, survival of the fittest, achieving strategy evolution.',
@@ -829,7 +829,7 @@ export const translations = {
     openSourceFeatures1: '完全开源代码',
     openSourceFeatures2: '支持自托管部署',
     openSourceFeatures3: '自定义 AI 提示词',
-    openSourceFeatures4: '多模型支持（DeepSeek、Qwen）',
+    openSourceFeatures4: '多模型支持（DeepSeek、Qwen、SiliconFlow）',
     multiAgentCompetition: '多代理智能竞争',
     multiAgentDesc: 'AI 策略在沙盒中高速战斗，最优者生存，实现策略进化。',
     multiAgentFeatures1: '多 AI 代理并行运行',

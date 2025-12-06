@@ -311,6 +311,7 @@ func (d *Database) initDefaultData() error {
 	}{
 		{"deepseek", "DeepSeek", "deepseek"},
 		{"qwen", "Qwen", "qwen"},
+		{"siliconflow", "SiliconFlow", "siliconflow"},
 	}
 
 	for _, model := range aiModels {
@@ -723,6 +724,8 @@ func (d *Database) UpdateAIModel(userID, id string, enabled bool, apiKey, custom
 			name = "DeepSeek AI"
 		} else if provider == "qwen" {
 			name = "Qwen AI"
+		} else if provider == "siliconflow" {
+			name = "SiliconFlow AI"
 		} else {
 			name = provider + " AI"
 		}
