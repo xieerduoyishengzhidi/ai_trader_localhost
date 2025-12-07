@@ -1,0 +1,15 @@
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 环境变量
+.env
+.env.local
+
