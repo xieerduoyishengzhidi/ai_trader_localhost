@@ -2,7 +2,7 @@
 
 ## 功能概述
 
-RAG（Retrieval-Augmented Generation）功能允许系统从Supabase数据库中检索历史交易观点，并将其添加到AI决策的用户提示词中，帮助AI基于历史经验做出更好的决策。
+RAG（Retrieval-Augmented Generation）功能允许系统从 ChromaDB 数据库中检索历史交易观点，并将其添加到AI决策的用户提示词中，帮助AI基于历史经验做出更好的决策。
 
 ## 工作原理
 
@@ -10,47 +10,58 @@ RAG（Retrieval-Augmented Generation）功能允许系统从Supabase数据库中
    - 例如：`林凡.txt` → 交易员名称: `林凡`
    - 例如：`1bxxx_林凡_只做多.txt` → 交易员名称: `1bxxx`
 
-2. **历史观点检索**：使用交易员名称在Supabase的`clean_data`表中搜索相关记录
-   - 搜索字段：`text`、`info_overall_assessment`
-   - 使用不区分大小写的模糊匹配（ILIKE）
+2. **历史观点检索**：使用交易员名称在 ChromaDB 中搜索相关记录
+   - 搜索字段：`screen_name`、`display_name`
+   - 使用元数据过滤和文本匹配
 
 3. **观点格式化**：提取的观点包含以下信息：
-   - 原始内容
-   - 资产分析
-   - 市场相关性
+   - 原始推文文本
    - 综合评估
+   - GPT 解释和原因
 
 4. **插入提示词**：在用户提示词的技术指标部分之后，插入格式化的历史观点
 
 ## 配置要求
 
-在`.env`文件中需要配置以下参数：
+### 1. 启动 ChromaDB RAG API 服务
 
-```env
-# Supabase配置
-SUPABASE_URL=https://your-project-id.supabase.co
-SUPABASE_SERVICE_KEY=your-service-role-key
+```powershell
+# 方式1：直接运行
+python rag/chromadb_api.py
 
-# 数据库表配置
-CLEAN_DATA_TABLE_NAME=clean_data
+# 方式2：使用启动脚本
+.\rag\start_api.ps1
 ```
 
-## 数据库表结构
+服务默认运行在 `http://127.0.0.1:8765`
 
-`clean_data`表应包含以下字段（参考`3_retrieve_clean_data_embeddings.py`）：
+### 2. 环境变量配置（可选）
 
-| 字段名 | 类型 | 说明 |
-|--------|------|------|
-| `id` | int/string | 主键 |
-| `message_id` | string | 消息ID |
-| `text` | text | 原始文本内容 |
-| `original_payload` | jsonb | 原始数据 |
-| `gpt_assets` | jsonb | GPT资产分析 |
-| `is_market_related_reason` | jsonb | 市场相关性原因 |
-| `info_overall_assessment` | text | 综合评估 |
-| `info_final_score_json` | jsonb | 最终评分 |
-| `info_final_score` | float | 评分数值 |
-| `embedding_context` | vector | 向量嵌入 |
+```powershell
+# API 服务地址（可选，默认 http://127.0.0.1:8765）
+$env:CHROMADB_RAG_API_URL="http://127.0.0.1:8765"
+
+# API 服务端口（可选，默认 8765）
+$env:RAG_API_PORT="8765"
+```
+
+## 数据准备
+
+### 1. 导入数据到 ChromaDB
+
+首次使用需要导入数据：
+
+```powershell
+python rag/import_to_chromadb.py
+```
+
+这会读取 `pentosh_all.csv` 文件并导入到 ChromaDB。
+
+### 2. 检查数据
+
+```powershell
+python rag/inspect_chromadb.py
+```
 
 ## 使用示例
 
@@ -60,140 +71,117 @@ CLEAN_DATA_TABLE_NAME=clean_data
 
 ```
 prompts/
-  ├── 林凡.txt
+  ├── Pentosh1.txt
   ├── 1bxxx_林凡_只做多.txt
-  └── taro_long_prompts.txt
+  └── ...
 ```
 
-### 2. 在Supabase中准备历史数据
+### 2. 系统自动调用
 
-确保`clean_data`表中有相关交易员的历史记录，例如：
+当使用自定义 prompt 模板时，系统会：
+1. 从 prompt 文件名提取交易员名称
+2. 调用 ChromaDB RAG API 检索历史观点
+3. 将观点插入到 User Prompt 中
+4. AI 基于历史观点做出决策
 
-```json
+## API 接口
+
+### 健康检查
+```http
+GET http://127.0.0.1:8765/health
+```
+
+### 查询历史观点
+```http
+POST http://127.0.0.1:8765/query_by_name
+Content-Type: application/json
+
 {
-  "id": 1,
-  "text": "林凡：BTC突破65000，建议做多",
-  "info_overall_assessment": "看涨信号强烈，技术面支持",
-  "gpt_assets": "BTC, ETH",
-  ...
+    "trader_name": "Pentosh1",
+    "limit": 5
 }
 ```
 
-### 3. 系统自动调用
-
-当使用指定的prompt模板名称时，系统会自动：
-1. 提取交易员名称（例如从`林凡.txt`提取`林凡`）
-2. 在Supabase中检索相关历史观点（最多5条）
-3. 将观点格式化后插入用户提示词
-
-### 4. 输出格式
-
-在用户提示词中，历史观点会以如下格式呈现：
-
-```
-## 📚 历史观点参考
-
-**这是历史上该交易员'林凡'的观点，用该观点辅助你的现有判断**
-
-1. 原始内容: BTC突破65000，建议做多 | 综合评估: 看涨信号强烈，技术面支持
-
-2. 原始内容: ETH回调到支撑位，考虑加仓 | 综合评估: 支撑位有效，风险可控
-
-...
+响应：
+```json
+{
+    "trader_name": "Pentosh1",
+    "viewpoints": [
+        "观点1...",
+        "观点2...",
+        ...
+    ],
+    "error_reason": ""
+}
 ```
 
-## 代码结构
+## 故障排查
 
-### 核心文件
+### 1. RAG 服务未启动
 
-- `decision/rag.go`：RAG检索实现
-  - `SupabaseRAGClient`：Supabase客户端
-  - `RetrieveTraderViewpoints()`：检索交易员观点
-  - `ExtractTraderNameFromPrompt()`：提取交易员名称
-  - `FormatRAGContext()`：格式化RAG上下文
+**症状**：Go 代码报错 "HTTP请求失败"
 
-- `decision/engine.go`：决策引擎集成
-  - `buildUserPromptWithRAG()`：构建带RAG的用户提示词
+**解决**：
+```powershell
+# 检查服务是否运行
+curl http://127.0.0.1:8765/health
 
-### 数据流
-
-```
-prompt文件名 → 提取交易员名称 → Supabase查询 → 提取观点 → 格式化 → 插入提示词 → AI决策
+# 启动服务
+python rag/chromadb_api.py
 ```
 
-## 错误处理
+### 2. 数据未导入
 
-系统采用优雅降级策略：
+**症状**：查询返回空结果
 
-1. **Supabase配置缺失**：跳过RAG，使用原始提示词
-2. **数据库查询失败**：记录警告日志，继续执行
-3. **未找到历史观点**：记录信息日志，不影响决策流程
+**解决**：
+```powershell
+# 导入数据
+python rag/import_to_chromadb.py
 
-日志输出示例：
-
-```
-✅ RAG检索成功: 交易员'林凡'找到3条历史观点
-⚠️  RAG检索失败: database connection timeout
-ℹ️  交易员'新手'未找到历史观点
+# 检查数据
+python rag/inspect_chromadb.py
 ```
 
-## 性能优化
+### 3. 依赖缺失
 
-1. **查询限制**：默认最多检索5条历史观点
-2. **内容截断**：每条观点最多500字符
-3. **HTTP超时**：10秒超时设置，避免长时间等待
-4. **缓存建议**：可以在未来版本中添加内存缓存
+**症状**：Python 报错 "No module named 'chromadb'"
 
-## 安全注意事项
-
-1. **敏感信息**：`SUPABASE_SERVICE_KEY`是敏感信息，不要提交到版本控制
-2. **权限控制**：使用Service Role Key时注意权限范围
-3. **SQL注入**：使用参数化查询，避免SQL注入风险
-
-## 调试技巧
-
-### 1. 检查Supabase连接
-
-```bash
-# 测试Supabase URL是否可访问
-curl -X GET "$SUPABASE_URL/rest/v1/clean_data?limit=1" \
-  -H "apikey: $SUPABASE_SERVICE_KEY" \
-  -H "Authorization: Bearer $SUPABASE_SERVICE_KEY"
+**解决**：
+```powershell
+pip install -r rag/requirements.txt
 ```
 
-### 2. 查看RAG日志
+## 技术细节
 
-运行系统时，注意观察以下日志：
+### ChromaDB 集合结构
 
-```
-✅ RAG检索成功: 交易员'林凡'找到3条历史观点
-```
+- **集合名称**: `pentosh_tweets`
+- **数据量**: 3141+ 条
+- **向量维度**: 768 维（moka-ai/m3e-base）
+- **存储位置**: `rag/chroma_db/`
 
-### 3. 手动测试查询
+### 查询方式
 
-使用Supabase控制台的SQL Editor测试查询：
+1. **元数据过滤**：根据 `screen_name` 或 `display_name` 匹配交易员
+2. **文本匹配**：如果精确匹配失败，使用模糊匹配
+3. **向量查询**（高级）：支持使用预计算的向量进行语义搜索
 
-```sql
-SELECT id, text, info_overall_assessment 
-FROM clean_data 
-WHERE text ILIKE '%林凡%' 
-   OR info_overall_assessment ILIKE '%林凡%'
-ORDER BY id DESC 
-LIMIT 5;
-```
+### 性能优化
 
-## 未来改进方向
+- 数据量小（3000+条），查询速度很快
+- 本地存储，无网络延迟
+- 批量查询，一次返回多条结果
 
-1. **向量搜索**：使用`embedding_context`字段进行语义相似度搜索
-2. **相关性排序**：基于时间、相关性等维度排序
-3. **观点聚合**：对相似观点进行聚合和去重
-4. **缓存机制**：添加内存缓存提高性能
-5. **多语言支持**：支持更多语言的观点检索
+## 迁移说明
 
-## 参考资料
+已从 Supabase 迁移到 ChromaDB：
+- ✅ 使用本地 ChromaDB 存储，无需外部服务
+- ✅ 通过 HTTP API 提供服务，Go 代码接口保持不变
+- ✅ 支持向量相似度搜索（未来可扩展）
+- ✅ 更快的查询速度，更低的延迟
 
-- Python参考实现：`3_retrieve_clean_data_embeddings.py`
-- 表结构配置：`config.py`
-- 环境变量示例：`env.example`
-- Supabase文档：https://supabase.com/docs
+## 相关文档
 
+- [RAG 查询方式总结](../rag/RAG_QUERY_SUMMARY.md)
+- [ChromaDB 导入脚本](../rag/README.md)

@@ -1,0 +1,11 @@
+# ChromaDB 数据库文件
+chroma_db/
+*.db
+*.sqlite
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+

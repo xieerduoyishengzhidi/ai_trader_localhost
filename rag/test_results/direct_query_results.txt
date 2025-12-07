@@ -1,0 +1,158 @@
+================================================================================
+直接查询 ChromaDB（向量搜索）
+================================================================================
+
+查询时间: 2025-12-07 16:02:15
+查询方式: 直接查询（向量搜索）
+查询文本: Bitcoin market analysis
+集合名称: news_summary
+查询参数: {
+  "query_text": "Bitcoin market analysis",
+  "n_results": 10,
+  "method": "vector_search_only"
+}
+
+找到结果数: 10
+
+================================================================================
+
+【结果 1】
+--------------------------------------------------------------------------------
+ID: 50c18e2216b17edb
+标题: Bitcoin Trades At 40 Discount As Spot Btc Etf Buying Soars To 3 B In One Week
+来源: CoinTelegraph
+发布时间: 2025-04-27 06:34:42+00:00
+URL: https://cointelegraph.com/news/bitcoin-trades-at-40-discount-as-spot-btc-etf-buying-soars-to-3-b-in-one-week
+摘要长度: 244 字符
+
+完整摘要:
+Biraajmaan Tamuly Apr 27, 2025 Bitcoin trades at 40 discount as spot BTC ETF buying soars to 3B in one week Data shows Bitcoin price is 40 undervalued, and the sharp uptick in spot BTC ETF purchasing suggests that institutional investors agree.
+
+================================================================================
+
+【结果 2】
+--------------------------------------------------------------------------------
+ID: fff27303f4662545
+标题: Bitcoin Treasury Firms Front Running 200 T Hyperbitcoinization Adam Back
+来源: CoinTelegraph
+发布时间: 2025-04-27 10:13:20+00:00
+URL: https://cointelegraph.com/news/bitcoin-treasury-firms-front-running-200-t-hyperbitcoinization-adam-back
+摘要长度: 273 字符
+
+完整摘要:
+Zoltan Vardai Apr 27, 2025 Bitcoin treasury firms driving 200T hyperbitcoinization  Adam Back According to Back, Strategy and other Bitcoin treasury firms are some of the earliest bettors on Hyperbitcoinization, which may see Bitcoins market cap soar to above 200 trillion.
+
+================================================================================
+
+【结果 3】
+--------------------------------------------------------------------------------
+ID: def661e304dd3f44
+标题: Us Spot Bitcoin Etfs Consecutive Inflow Week Significant Inflows
+来源: CoinTelegraph
+发布时间: 2025-04-26 05:29:04+00:00
+URL: https://cointelegraph.com/news/us-spot-bitcoin-etfs-consecutive-inflow-week-significant-inflows
+摘要长度: 295 字符
+
+完整摘要:
+Ciaran Lyons Apr 26, 2025 Bitcoin ETFs on 3B bender, log first full week of inflows in 5 weeks ETF analyst Eric Balchunas pointed out how quickly spot Bitcoin ETFs can go from 1st gear to 5th gear. Listen 0:00 News COINTELEGRAPH IN YOUR SOCIAL FEED Spot Bitcoin exchange-traded funds (ETF) in th
+
+================================================================================
+
+【结果 4】
+--------------------------------------------------------------------------------
+ID: 71bec8fd695e9bfd
+标题: Semler Scientific Buys Another 10 Million Bitcoin
+来源: CoinTelegraph
+发布时间: 2025-04-25 21:00:00+00:00
+URL: https://cointelegraph.com/news/semler-scientific-buys-another-10-million-bitcoin
+摘要长度: 203 字符
+
+完整摘要:
+Alex ODonnell Apr 25, 2025 Semler Scientific buys another 10M worth of BTC The healthcare company increased its Bitcoin yield by 23.5 year-to-date, indicating a higher ratio of BTC per outstanding share.
+
+================================================================================
+
+【结果 5】
+--------------------------------------------------------------------------------
+ID: 414f9cd1dcf8ec12
+标题: Nasdaq Urges Sec To Treat Certain Cryptocurrencies As Stocks By Any Other Name
+来源: CoinTelegraph
+发布时间: 2025-04-25 19:29:03+00:00
+URL: https://cointelegraph.com/news/nasdaq-urges-sec-to-treat-certain-cryptocurrencies-as-stocks-by-any-other-name
+摘要长度: 206 字符
+
+完整摘要:
+Alex ODonnell Apr 25, 2025 Nasdaq urges SEC to treat certain digital assets as 'stocks by any other name' In a comment letter, the exchange proposed categorizing some digital assets as financial securities.
+
+================================================================================
+
+【结果 6】
+--------------------------------------------------------------------------------
+ID: 265912aaa9fe506e
+标题: Defi Development Offer 1 B Securities Solana Acquisition
+来源: CoinTelegraph
+发布时间: 2025-04-26 13:02:42+00:00
+URL: https://cointelegraph.com/news/defi-development-offer-1-b-securities-solana-acquisition
+摘要长度: 202 字符
+
+完整摘要:
+Zoltan Vardai Apr 26, 2025 DeFi Development seeks 1B to boost Solana investments, expand treasury DeFi Development Corp is seeking to raise more capital for its Solana treasury and operational expenses.
+
+================================================================================
+
+【结果 7】
+--------------------------------------------------------------------------------
+ID: b75b98dc2514aea9
+标题: United States Crypto Custody Regulations Floor Lava Hester Peirce Sec
+来源: CoinTelegraph
+发布时间: 2025-04-27 04:31:53+00:00
+URL: https://cointelegraph.com/news/united-states-crypto-custody-regulations-floor-lava-hester-peirce-sec
+摘要长度: 297 字符
+
+完整摘要:
+Ciaran Lyons Apr 27, 2025 US crypto rules like 'floor is lava' game without lights  Hester Peirce SEC Commissioner Hester Peirce said that to engage in crypto activities, SEC-registrants have had to hop from one poorly illuminated regulatory space to the next. Listen 0:00 News COINTELEGRAPH IN YO
+
+================================================================================
+
+【结果 8】
+--------------------------------------------------------------------------------
+ID: 9f7e59b2408f61bb
+标题: Crypto Banking Guidance United States Federal Reserve Cynthia Lummis Doubts
+来源: CoinTelegraph
+发布时间: 2025-04-26 08:33:04+00:00
+URL: https://cointelegraph.com/news/crypto-banking-guidance-united-states-federal-reserve-cynthia-lummis-doubts
+摘要长度: 243 字符
+
+完整摘要:
+Ciaran Lyons Apr 26, 2025 Crypto banking rule withdrawal by Fed not real progress  Senator Lummis Senator Cynthia Lummis' doubts about the Federal Reserve's recent decision come as many prominent crypto entrepreneurs have voiced their support.
+
+================================================================================
+
+【结果 9】
+--------------------------------------------------------------------------------
+ID: fe3918d72b6c2c81
+标题: Sec Paul Atkins Benefits Crypto Roundtable
+来源: CoinTelegraph
+发布时间: 2025-04-25 20:16:53+00:00
+URL: https://cointelegraph.com/news/sec-paul-atkins-benefits-crypto-roundtable
+摘要长度: 246 字符
+
+完整摘要:
+Turner Wright Apr 25, 2025 SEC chair suggests 'huge benefits' in agency's third crypto roundtable The roundtable event on crypto custody marked one of the first times Paul Atkins spoke as the new chair of the SEC since being sworn in on April 21.
+
+================================================================================
+
+【结果 10】
+--------------------------------------------------------------------------------
+ID: 9d0a69ec9d9c22e5
+标题: Solana S Loop Scale Halts Lending After 5 8 M Hack
+来源: CoinTelegraph
+发布时间: 2025-04-26 20:03:02+00:00
+URL: https://cointelegraph.com/news/solana-s-loop-scale-halts-lending-after-5-8-m-hack
+摘要长度: 342 字符
+
+完整摘要:
+Alex ODonnell Apr 26, 2025 Solana's Loopscale pauses lending after 5.8M hack The DeFi lending protocol has restored loan repayments but some functionalities are still disabled, Loopscale said. Listen 0:00 News COINTELEGRAPH IN YOUR SOCIAL FEED Update (April 26 at 8:57 PM UTC): This article has been updated to include updates from Loopscale.
+
+================================================================================
+

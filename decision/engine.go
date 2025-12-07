@@ -1326,7 +1326,7 @@ func buildUserPromptWithRAG(ctx *Context, traderName string) string {
 
 	// ==================== 新增：RAG历史观点 ====================
 	if traderName != "" {
-		ragClient, err := NewSupabaseRAGClient()
+		ragClient, err := NewChromaDBRAGClient()
 		if err != nil {
 			log.Printf("⚠️  创建RAG客户端失败: %v", err)
 		} else {
