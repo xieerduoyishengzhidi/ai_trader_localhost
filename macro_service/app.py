@@ -139,11 +139,19 @@ def get_fred_series():
         
         # 获取数据
         try:
+            fred_params = {}
+            if start_date:
+                fred_params["start"] = start_date
+            if end_date:
+                fred_params["end"] = end_date
+            if limit is not None:
+                try:
+                    fred_params["limit"] = int(limit)
+                except (ValueError, TypeError):
+                    return jsonify({"error": "limit 必须是整数"}), 400
             df = fred.get_series(
                 series_id=series_id,
-                start=start_date,
-                end=end_date,
-                limit=limit
+                **fred_params
             )
             
             if df is None or df.empty:
@@ -214,6 +222,72 @@ def get_common_series():
     })
 
 
+FRED_YFINANCE_FALLBACK = {
+    "DX-Y.NYB": "DTWEXBGS",
+    "^DXY": "DTWEXBGS"
+}
+
+
+def _estimate_days_from_period(period: Optional[str]) -> int:
+    default_days = 90
+    if not period:
+        return default_days
+    value = period.lower()
+    try:
+        if value.endswith("mo"):
+            return int(value[:-2]) * 30
+        if value.endswith("y"):
+            return int(value[:-1]) * 365
+        if value.endswith("d"):
+            return int(value[:-1])
+    except ValueError:
+        return default_days
+    return default_days
+
+
+def _build_fred_quote_fallback(symbol: str, period: str) -> Optional[Dict[str, Any]]:
+    if not fred:
+        return None
+
+    series_id = FRED_YFINANCE_FALLBACK.get(symbol.upper())
+    if not series_id:
+        return None
+
+    days = _estimate_days_from_period(period)
+    end_dt = datetime.now()
+    start_dt = end_dt - timedelta(days=days)
+
+    try:
+        series = fred.get_series(
+            series_id=series_id,
+            start=start_dt.strftime("%Y-%m-%d"),
+            end=end_dt.strftime("%Y-%m-%d")
+        )
+    except Exception as exc:
+        logger.warning(f"⚠️ 使用 FRED {series_id} 作为 {symbol} 备选数据时失败: {exc}")
+        return None
+
+    if series is None or series.empty:
+        return None
+
+    data_points = []
+    for date, value in series.items():
+        data_points.append({
+            "date": date.strftime("%Y-%m-%d") if hasattr(date, "strftime") else str(date),
+            "open": None,
+            "high": None,
+            "low": None,
+            "close": float(value) if value is not None else None,
+            "volume": None
+        })
+
+    return {
+        "symbol": symbol,
+        "data": data_points,
+        "message": f"使用 FRED {series_id} 的数据作为备份"
+    }
+
+
 @app.route("/api/yfinance/quote", methods=["POST"])
 def get_yfinance_quote():
     """
@@ -247,11 +321,16 @@ def get_yfinance_quote():
             hist = ticker.history(period=period, interval=interval)
             
             if hist is None or hist.empty:
+                fallback = _build_fred_quote_fallback(symbol, period)
+                if fallback:
+                    logger.info(f"⚠️ {symbol} 从 yfinance 无数据，使用 FRED 备份")
+                    return jsonify(fallback)
+                logger.warning(f"⚠️ {symbol} 从 yfinance 无数据")
                 return jsonify({
                     "symbol": symbol,
                     "data": [],
                     "message": "未找到数据"
-                }), 404
+                }), 200
             
             # 转换为JSON格式
             data_points = []

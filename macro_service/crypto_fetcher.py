@@ -7,8 +7,10 @@ import ccxt
 import pandas as pd
 import requests
 import time
+import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -33,6 +35,112 @@ class CryptoDataLoader:
         except Exception as e:
             logger.error(f"❌ 初始化 Binance 接口失败: {e}")
             self.exchange = None
+        
+        self.cache_path = Path(__file__).resolve().parent / "data_cache.json"
+        self.cache = self._load_cache()
+
+    def _load_cache(self) -> Dict[str, Any]:
+        if self.cache_path.exists():
+            try:
+                with open(self.cache_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"⚠️ 读取缓存失败 ({self.cache_path}): {e}")
+        return {"futures": {}, "etf": {}, "structure": {}}
+
+    def _write_cache(self) -> None:
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.cache_path, "w", encoding="utf-8") as f:
+                json.dump(self.cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"⚠️ 写入缓存失败 ({self.cache_path}): {e}")
+
+    def _update_cache_section(self, section: str, payload: Dict[str, Any]) -> None:
+        section_data = self.cache.setdefault(section, {})
+        section_data.update(payload)
+        self._write_cache()
+
+    def _get_cache_section(self, section: str) -> Dict[str, Any]:
+        return self.cache.get(section, {})
+
+    def _append_history(self, section: str, key: str, value: float, limit: int = 180) -> None:
+        if value is None:
+            return
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        history_key = f"{key}_history"
+        history = self.cache.setdefault(section, {}).setdefault(history_key, [])
+        if history and history[-1].get("date") == today:
+            history[-1]["value"] = value
+        else:
+            history.append({"date": today, "value": value})
+        self.cache[section][history_key] = history[-limit:]
+        self._write_cache()
+
+    def _get_history(self, section: str, key: str) -> list:
+        return self.cache.get(section, {}).get(f"{key}_history", [])
+
+    def _get_value_days_ago(self, section: str, key: str, days: int) -> Optional[float]:
+        history = self._get_history(section, key)
+        if not history:
+            return None
+        target_date = (datetime.utcnow() - timedelta(days=days)).date()
+        for entry in reversed(history):
+            try:
+                entry_date = datetime.fromisoformat(entry["date"]).date()
+            except Exception:
+                continue
+            if entry_date <= target_date:
+                return entry["value"]
+        # fallback to earliest available
+        try:
+            return history[0]["value"]
+        except (IndexError, KeyError):
+            return None
+
+    def _compute_ma(self, section: str, key: str, length: int) -> Optional[float]:
+        history = [entry["value"] for entry in self._get_history(section, key) if entry.get("value") is not None]
+        if not history:
+            return None
+        window = history[-length:]
+        return sum(window) / len(window)
+
+    def _fill_with_cache(self, section: str, data: Dict[str, Any], zeros_missing: Optional[set] = None) -> Dict[str, Any]:
+        zeros_missing = zeros_missing or set()
+        cache_section = self._get_cache_section(section)
+        for key, value in data.items():
+            needs_fill = value is None or (key in zeros_missing and value == 0)
+            if needs_fill:
+                cached_value = cache_section.get(key)
+                if cached_value is not None:
+                    data[key] = cached_value
+        return data
+
+    def _compute_pct_change(self, section: str, key: str, days: int, current: Optional[float]) -> Optional[float]:
+        if current is None:
+            return None
+        past = self._get_value_days_ago(section, key, days)
+        if past is None or past == 0:
+            return None
+        return round((current - past) / past * 100, 2)
+
+    def _parse_flow_value(self, raw: Any) -> Optional[float]:
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            return None
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        text = str(raw).replace(',', '').strip()
+        multiplier = 1.0
+        if text.endswith('M'):
+            multiplier = 1.0
+            text = text[:-1]
+        elif text.endswith('B'):
+            multiplier = 1000.0
+            text = text[:-1]
+        try:
+            return float(text) * multiplier
+        except ValueError:
+            return None
 
     def get_binance_futures_data(self, symbol="BTC/USDT") -> Optional[Dict[str, Any]]:
         """
@@ -76,7 +184,7 @@ class CryptoDataLoader:
             ls_data = ls_resp.json() if ls_resp.status_code == 200 else []
             ls_ratio = float(ls_data[0]['longShortRatio']) if ls_data else None
             
-            return {
+            result = {
                 "symbol": symbol,
                 "price": ticker['last'],
                 "price_change_24h_pct": ticker['percentage'],
@@ -87,8 +195,26 @@ class CryptoDataLoader:
                 "long_short_ratio": ls_ratio,
                 "timestamp": datetime.now().isoformat()
             }
+            if result.get("price") is not None:
+                self._append_history("futures", "price", result["price"])
+            result = self._fill_with_cache("futures", result, zeros_missing={"price"})
+            self._update_cache_section("futures", {
+                "price": result.get("price"),
+                "price_change_24h_pct": result.get("price_change_24h_pct"),
+                "funding_rate": result.get("funding_rate"),
+                "open_interest_usd": result.get("open_interest_usd"),
+                "long_short_ratio": result.get("long_short_ratio")
+            })
+            return result
         except Exception as e:
             logger.error(f"❌ 获取 Binance 期货数据失败 ({symbol}): {e}", exc_info=True)
+            cached = self._get_cache_section("futures")
+            if cached:
+                logger.warning("⚠️ Binance 期货数据回退到缓存值")
+                cached_copy = dict(cached)
+                cached_copy["symbol"] = symbol
+                cached_copy["from_cache"] = True
+                return cached_copy
             return None
 
     def get_etf_flows(self) -> Dict[str, Any]:
@@ -102,55 +228,78 @@ class CryptoDataLoader:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
         
         try:
-            # Pandas 自动识别网页里的表格
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
-            
+
             tables = pd.read_html(response.text)
             if not tables:
-                return {"etf_net_inflow_total": 0, "status": "No table found"}
-            
+                return {"etf_net_inflow_total": 0, "status": "No table found", "timestamp": datetime.now().isoformat()}
+
             df = tables[0]
-            
-            # 这是一个大表格，最后几行通常是最新的
-            # 我们只需要最后一行的数据（昨天的收盘数据）
-            # Farside 的列名经常变，但 'Total' 列通常比较稳定
             latest = df.iloc[-1]
-            
-            # 有时候最后一行是空数据（今天还没出），取倒数第二行
             if pd.isna(latest.get('Total', None)) and len(df) > 1:
                 latest = df.iloc[-2]
-            
-            # 尝试解析数值（可能是字符串格式，如 "123.45M"）
-            total_value = latest.get('Total', 0)
-            ibit_value = latest.get('IBIT', 0)
-            
-            # 如果是字符串，尝试提取数字
-            if isinstance(total_value, str):
-                try:
-                    # 移除 M, B 等后缀并转换
-                    total_value = float(total_value.replace('M', '').replace('B', '').replace(',', '').strip())
-                    if 'B' in str(latest.get('Total', '')):
-                        total_value *= 1000  # B 转 M
-                except:
-                    total_value = 0
-            
-            if isinstance(ibit_value, str):
-                try:
-                    ibit_value = float(ibit_value.replace('M', '').replace('B', '').replace(',', '').strip())
-                    if 'B' in str(latest.get('IBIT', '')):
-                        ibit_value *= 1000
-                except:
-                    ibit_value = 0
-            
-            return {
-                "etf_date": str(latest.get('Date', 'Unknown')),
-                "etf_net_inflow_total": total_value,  # 单位通常是 Million USD
-                "etf_ibit_flow": ibit_value,  # 贝莱德的数据，作为风向标
+
+            total_value = self._parse_flow_value(latest.get('Total', 0))
+            ibit_value = self._parse_flow_value(latest.get('IBIT', 0))
+            date_str = str(latest.get('Date', 'Unknown')).strip()
+            date_ts = pd.to_datetime(date_str, errors='coerce')
+            is_weekend = False
+            if not pd.isna(date_ts):
+                is_weekend = date_ts.weekday() >= 5
+                date_str = date_ts.strftime("%Y-%m-%d")
+
+            status = "ok"
+            if is_weekend and (total_value is None or total_value == 0):
+                total_value = None
+                status = "weekend_forward_fill"
+
+            week_values = []
+            for _, row in df.tail(7).iterrows():
+                value = self._parse_flow_value(row.get('Total'))
+                if value is not None:
+                    week_values.append(value)
+            week_avg = round(sum(week_values) / len(week_values), 2) if week_values else None
+
+            result = {
+                "etf_date": date_str or "Unknown",
+                "etf_net_inflow_total": total_value,
+                "etf_ibit_flow": ibit_value,
+                "etf_weekly_avg_flow_m": week_avg,
+                "etf_weekly_data_points": len(week_values),
+                "status": status,
                 "timestamp": datetime.now().isoformat()
             }
+
+            cache_section = self._get_cache_section("etf")
+            filled = False
+            for key in ("etf_net_inflow_total", "etf_ibit_flow"):
+                if result.get(key) is None:
+                    cached_value = cache_section.get(key)
+                    if cached_value is not None:
+                        result[key] = cached_value
+                        filled = True
+            if filled and status == "ok":
+                result["status"] = "forward_fill_from_cache"
+
+            self._update_cache_section("etf", {
+                "etf_net_inflow_total": result.get("etf_net_inflow_total"),
+                "etf_ibit_flow": result.get("etf_ibit_flow"),
+                "etf_date": result.get("etf_date"),
+                "status": result.get("status")
+            })
+
+            return result
         except Exception as e:
             logger.error(f"❌ 获取 ETF 数据失败: {e}", exc_info=True)
+            cached = self._get_cache_section("etf")
+            if cached:
+                cached_copy = dict(cached)
+                cached_copy["from_cache"] = True
+                cached_copy.setdefault("status", "cache_replay")
+                cached_copy["timestamp"] = datetime.now().isoformat()
+                return cached_copy
+
             return {
                 "etf_net_inflow_total": 0,
                 "etf_ibit_flow": 0,
@@ -185,6 +334,7 @@ class CryptoDataLoader:
         except Exception as e:
             logger.warning(f"获取稳定币数据失败: {e}")
             metrics['stablecoin_total_cap_billions'] = 0
+        self._append_history("structure", "stablecoin_cap", metrics['stablecoin_total_cap_billions'])
         
         # 2. 市场结构: BTC.D 和 TOTAL3 (CoinGecko)
         try:
@@ -210,6 +360,8 @@ class CryptoDataLoader:
             logger.warning(f"获取 CoinGecko 数据失败: {e}")
             metrics['btc_dominance'] = 55.0  # Fallback
             metrics['total3_cap_billions'] = 0
+        self._append_history("structure", "btc_dom", metrics['btc_dominance'])
+        self._append_history("structure", "total3", metrics['total3_cap_billions'])
         
         # 3. ETH/BTC Ratio (使用 Binance 价格计算)
         try:
@@ -236,6 +388,9 @@ class CryptoDataLoader:
             logger.warning(f"计算 ETH/BTC 比率失败: {e}")
             metrics['eth_btc_ratio'] = 0
         
+        # 填补 Eth/BTC 等无法为 0 的字段
+        metrics = self._fill_with_cache("structure", metrics, zeros_missing={"eth_btc_ratio"})
+
         # 4. 恐惧贪婪指数 (Alternative.me)
         try:
             fg_url = "https://api.alternative.me/fng/?limit=1"
@@ -248,7 +403,23 @@ class CryptoDataLoader:
             logger.warning(f"获取恐惧贪婪指数失败: {e}")
             metrics['fear_greed_index'] = 50
             metrics['fear_greed_classification'] = 'Neutral'
-        
+        metrics['btc_dom_trend_90d'] = self._compute_pct_change("structure", "btc_dom", 90, metrics.get('btc_dominance'))
+        metrics['stablecoin_growth_30d_pct'] = self._compute_pct_change("structure", "stablecoin_cap", 30, metrics.get('stablecoin_total_cap_billions'))
+        ma50 = self._compute_ma("structure", "total3", 50)
+        if ma50 is not None and metrics.get('total3_cap_billions') is not None:
+            metrics['total3_structure_status'] = "Above MA50" if metrics['total3_cap_billions'] >= ma50 else "Below MA50"
+            metrics['total3_ma50_b'] = round(ma50, 2)
+        else:
+            metrics['total3_structure_status'] = "MA50 unavailable"
+
+        self._update_cache_section("structure", {
+            "stablecoin_total_cap_billions": metrics.get('stablecoin_total_cap_billions'),
+            "btc_dominance": metrics.get('btc_dominance'),
+            "total3_cap_billions": metrics.get('total3_cap_billions'),
+            "eth_btc_ratio": metrics.get('eth_btc_ratio'),
+            "total_market_cap_billions": metrics.get('total_market_cap_billions')
+        })
+
         metrics['timestamp'] = datetime.now().isoformat()
         return metrics
 
@@ -265,6 +436,18 @@ class CryptoDataLoader:
         structure_data = self.get_market_structure_and_liquidity()
         
         # 整合数据
+        price_change_7d = self._compute_pct_change(
+            "futures",
+            "price",
+            7,
+            binance_data.get('price') if binance_data else None
+        )
+
+        ma50 = self._compute_ma("futures", "price", 50)
+        price_vs_ma = None
+        if ma50 and binance_data and binance_data.get('price') is not None and ma50 != 0:
+            price_vs_ma = round((binance_data['price'] - ma50) / ma50 * 100, 2)
+
         full_crypto_context = {
             "timestamp": datetime.now().isoformat(),
             "symbol": symbol,
@@ -272,23 +455,33 @@ class CryptoDataLoader:
                 "stablecoin_mcap_b": structure_data.get('stablecoin_total_cap_billions'),
                 "etf_net_inflow_m": etf_data.get('etf_net_inflow_total'),
                 "etf_ibit_flow_m": etf_data.get('etf_ibit_flow'),
-                "etf_date": etf_data.get('etf_date')
+                "etf_weekly_avg_flow_m": etf_data.get('etf_weekly_avg_flow_m'),
+                "etf_weekly_data_points": etf_data.get('etf_weekly_data_points'),
+                "etf_date": etf_data.get('etf_date'),
+                "etf_status": etf_data.get('status')
             },
             "layer3_structure": {
                 "btc_dominance": structure_data.get('btc_dominance'),
                 "eth_dominance": structure_data.get('eth_dominance'),
                 "eth_btc_ratio": structure_data.get('eth_btc_ratio'),
                 "total3_cap_b": structure_data.get('total3_cap_billions'),
-                "total_market_cap_b": structure_data.get('total_market_cap_billions')
+                "total_market_cap_b": structure_data.get('total_market_cap_billions'),
+                "btc_dom_trend_90d": structure_data.get('btc_dom_trend_90d'),
+                "total3_structure_status": structure_data.get('total3_structure_status'),
+                "total3_ma50_b": structure_data.get('total3_ma50_b'),
+                "stablecoin_growth_30d_pct": structure_data.get('stablecoin_growth_30d_pct')
             },
             "layer4_sentiment": {
                 "price_btc": binance_data.get('price') if binance_data else None,
                 "price_change_24h_pct": binance_data.get('price_change_24h_pct') if binance_data else None,
+                "price_change_7d_pct": price_change_7d,
+                "price_vs_50d_ma_pct": price_vs_ma,
                 "funding_rate": binance_data.get('funding_rate') if binance_data else None,
                 "funding_rate_annualized_pct": round(binance_data.get('funding_yearly_pct', 0), 2) if binance_data else None,
                 "open_interest_usd_b": round(binance_data.get('open_interest_usd', 0) / 1e9, 2) if binance_data else None,
                 "open_interest_btc": binance_data.get('open_interest_btc') if binance_data else None,
                 "long_short_ratio": binance_data.get('long_short_ratio') if binance_data else None,
+                "price_source": "cache" if binance_data and binance_data.get('from_cache') else "live",
                 "fear_greed_index": structure_data.get('fear_greed_index'),
                 "fear_greed_classification": structure_data.get('fear_greed_classification')
             }
