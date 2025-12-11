@@ -33,6 +33,10 @@ type PromptDataConfig struct {
 	IncludeAccount   bool     `json:"include_account"`   // 是否包含账户信息
 	IncludePositions bool     `json:"include_positions"` // 是否包含持仓信息
 	IncludeRAG       bool     `json:"include_rag"`       // 是否包含RAG历史观点
+	// 展示控制（默认true，便于向后兼容）
+	ShowFibLevels  bool `json:"show_fib_levels"`  // 是否展示斐波那契各水平数值
+	ShowOTE        bool `json:"show_ote"`         // 是否展示OTE区间/位置提示
+	ShowRecentMove bool `json:"show_recent_move"` // 是否展示15m最新价格变动
 }
 
 // GetDefaultDataSchema 获取默认数据模式定义
@@ -399,6 +403,20 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 		return ""
 	}
 
+	// 展示开关（默认开启，保持向后兼容）
+	showFib := true
+	showOTE := true
+	showRecentMove := true
+	if !config.ShowFibLevels {
+		showFib = false
+	}
+	if !config.ShowOTE {
+		showOTE = false
+	}
+	if !config.ShowRecentMove {
+		showRecentMove = false
+	}
+
 	var sb strings.Builder
 	filteredData := FilterDataBySchema(data, config, schema)
 
@@ -502,11 +520,15 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 
 	// 斐波那契水平
 	if fib, ok := filteredData["fibonacci"].(*FibLevels); ok && fib != nil {
-		sb.WriteString("📐 斐波那契水平: (回撤位用于判断支撑阻力, OTE区间=0.618-0.705是回调入场最佳区域)\n")
-		sb.WriteString(fmt.Sprintf("   • 0.5中线: %.4f | 0.618: %.4f | 0.705: %.4f\n",
-			fib.Level500, fib.Level618, fib.Level705))
-		sb.WriteString(fmt.Sprintf("   • OTE区间: %.4f - %.4f\n",
-			fib.Level618, fib.Level705))
+		if showFib {
+			sb.WriteString("📐 斐波那契水平: (回撤位用于判断支撑阻力, OTE区间=0.618-0.705是回调入场最佳区域)\n")
+			sb.WriteString(fmt.Sprintf("   • 0.5中线: %.4f | 0.618: %.4f | 0.705: %.4f\n",
+				fib.Level500, fib.Level618, fib.Level705))
+		}
+		if showOTE {
+			sb.WriteString(fmt.Sprintf("   • OTE区间: %.4f - %.4f\n",
+				fib.Level618, fib.Level705))
+		}
 	}
 
 	// 市场结构（日线，用于大周期分析）
@@ -577,6 +599,15 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 			sb.WriteString(fmt.Sprintf(" | 4h变化: %+.2f基点", fr.Change4h))
 		}
 		sb.WriteString(" (正费率=做多付费, 负费率=做空付费, 费率上升=做多情绪增强)\n")
+	}
+
+	// 价格序列近期变动（15m）
+	if showRecentMove && data.MultiTimeframe != nil && data.MultiTimeframe.Timeframe15m != nil {
+		priceSeries := data.MultiTimeframe.Timeframe15m.PriceSeries
+		if len(priceSeries) >= 2 {
+			recentChange := ((priceSeries[len(priceSeries)-1] - priceSeries[len(priceSeries)-2]) / priceSeries[len(priceSeries)-2]) * 100
+			sb.WriteString(fmt.Sprintf("📈 最新变动(15m): %+.2f%%\n", recentChange))
+		}
 	}
 
 	return sb.String()

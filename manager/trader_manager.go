@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"nofx/config"
+	decision "nofx/decision"
 	"nofx/trader"
 	"sort"
 	"strconv"
@@ -205,6 +206,18 @@ func (tm *TraderManager) addTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		tradingCoins = defaultCoins
 	}
 
+	// Prompt 数据字段与 RAG
+	promptFields := decision.DefaultPromptFields
+	if traderCfg.PromptDataFields != "" {
+		var parsed []string
+		if err := json.Unmarshal([]byte(traderCfg.PromptDataFields), &parsed); err == nil && len(parsed) > 0 {
+			promptFields = parsed
+		} else if err != nil {
+			log.Printf("⚠️ 解析交易员 %s 的 prompt_data_fields 失败，使用默认值: %v", traderCfg.ID, err)
+		}
+	}
+	ragEnabled := traderCfg.RAGEnabled
+
 	// 根据交易员配置决定是否使用信号源
 	var effectiveCoinPoolURL string
 	if traderCfg.UseCoinPool && coinPoolURL != "" {
@@ -241,6 +254,8 @@ func (tm *TraderManager) addTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		DefaultCoins:          defaultCoins,
 		TradingCoins:          tradingCoins,
 		SystemPromptTemplate:  traderCfg.SystemPromptTemplate, // 系统提示词模板
+		PromptDataFields:      promptFields,
+		RAGEnabled:            ragEnabled,
 	}
 
 	// 根据交易所类型设置API密钥
@@ -316,6 +331,18 @@ func (tm *TraderManager) AddTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		tradingCoins = defaultCoins
 	}
 
+	// Prompt 数据字段与 RAG
+	promptFields := decision.DefaultPromptFields
+	if traderCfg.PromptDataFields != "" {
+		var parsed []string
+		if err := json.Unmarshal([]byte(traderCfg.PromptDataFields), &parsed); err == nil && len(parsed) > 0 {
+			promptFields = parsed
+		} else if err != nil {
+			log.Printf("⚠️ 解析交易员 %s 的 prompt_data_fields 失败，使用默认值: %v", traderCfg.ID, err)
+		}
+	}
+	ragEnabled := traderCfg.RAGEnabled
+
 	// 根据交易员配置决定是否使用信号源
 	var effectiveCoinPoolURL string
 	if traderCfg.UseCoinPool && coinPoolURL != "" {
@@ -351,6 +378,8 @@ func (tm *TraderManager) AddTraderFromDB(traderCfg *config.TraderRecord, aiModel
 		IsCrossMargin:         traderCfg.IsCrossMargin,
 		DefaultCoins:          defaultCoins,
 		TradingCoins:          tradingCoins,
+		PromptDataFields:      promptFields,
+		RAGEnabled:            ragEnabled,
 	}
 
 	// 根据交易所类型设置API密钥
@@ -869,6 +898,18 @@ func (tm *TraderManager) loadSingleTrader(traderCfg *config.TraderRecord, aiMode
 		tradingCoins = defaultCoins
 	}
 
+	// Prompt 数据字段与 RAG
+	promptFields := decision.DefaultPromptFields
+	if traderCfg.PromptDataFields != "" {
+		var parsed []string
+		if err := json.Unmarshal([]byte(traderCfg.PromptDataFields), &parsed); err == nil && len(parsed) > 0 {
+			promptFields = parsed
+		} else if err != nil {
+			log.Printf("⚠️ 解析交易员 %s 的 prompt_data_fields 失败，使用默认值: %v", traderCfg.ID, err)
+		}
+	}
+	ragEnabled := traderCfg.RAGEnabled
+
 	// 根据交易员配置决定是否使用信号源
 	var effectiveCoinPoolURL string
 	if traderCfg.UseCoinPool && coinPoolURL != "" {
@@ -903,6 +944,8 @@ func (tm *TraderManager) loadSingleTrader(traderCfg *config.TraderRecord, aiMode
 		SystemPromptTemplate: traderCfg.SystemPromptTemplate, // 系统提示词模板
 		BinanceTestnet:       exchangeCfg.Testnet,
 		HyperliquidTestnet:   exchangeCfg.Testnet, // Hyperliquid测试网
+		PromptDataFields:     promptFields,
+		RAGEnabled:           ragEnabled,
 	}
 
 	// 根据交易所类型设置API密钥

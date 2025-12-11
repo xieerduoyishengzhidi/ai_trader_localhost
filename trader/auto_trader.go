@@ -83,6 +83,10 @@ type AutoTraderConfig struct {
 
 	// 系统提示词模板
 	SystemPromptTemplate string // 系统提示词模板名称（如 "default", "aggressive"）
+
+	// Prompt 数据字段配置
+	PromptDataFields []string
+	RAGEnabled       bool
 }
 
 // AutoTrader 自动交易器
@@ -469,17 +473,17 @@ func (at *AutoTrader) runCycle() error {
 	// 第二步：所有 close 操作完成后，清除缓存并刷新余额
 	if len(closeDecisions) > 0 && len(openDecisions) > 0 {
 		log.Println("  🔄 平仓操作完成，正在清除缓存并刷新数据...")
-		
+
 		// 清除余额和仓位缓存（如果支持）
 		if binanceTrader, ok := at.trader.(*FuturesTrader); ok {
 			binanceTrader.ClearBalanceCache()
 			binanceTrader.ClearPositionsCache() // 清除仓位缓存，确保开仓前获取最新数据
 		}
-		
+
 		// ⚠️ 关键：等待API更新（2秒），避免平仓后立即开仓时API还未更新
 		log.Println("  ⏱ 等待API更新（2秒）...")
 		time.Sleep(2 * time.Second)
-		
+
 		// 强制刷新余额
 		balance, err := at.trader.GetBalance()
 		if err != nil {
@@ -489,7 +493,7 @@ func (at *AutoTrader) runCycle() error {
 				log.Printf("  ✓ 余额已刷新: 可用余额 = %.2f USDT", availableBalance)
 			}
 		}
-		
+
 		log.Println()
 	}
 
@@ -563,12 +567,12 @@ func (at *AutoTrader) checkAndUpdateTrades(record *logger.DecisionRecord) {
 	hasUpdates := false
 	for i := range record.Decisions {
 		action := &record.Decisions[i]
-		
+
 		// 只检测成功的open/close操作，且订单ID有效
 		if !action.Success || action.OrderID == 0 {
 			continue
 		}
-		
+
 		isOpenOrClose := action.Action == "open_long" || action.Action == "open_short" ||
 			action.Action == "close_long" || action.Action == "close_short"
 		if !isOpenOrClose {
@@ -583,7 +587,7 @@ func (at *AutoTrader) checkAndUpdateTrades(record *logger.DecisionRecord) {
 		// 定期检测成交（最多检测30秒，每3秒检测一次）
 		maxAttempts := 10
 		checkInterval := 3 * time.Second
-		
+
 		for attempt := 0; attempt < maxAttempts; attempt++ {
 			// 调用工具函数获取成交记录
 			trades, err := at.getOrderTradesFromAPI(baseURL, apiKey, secretKey, action.Symbol, action.OrderID)
@@ -632,7 +636,7 @@ func (at *AutoTrader) checkAndUpdateTrades(record *logger.DecisionRecord) {
 func (at *AutoTrader) getOrderTradesFromAPI(baseURL, apiKey, secretKey, symbol string, orderID int64) ([]logger.TradeDetail, error) {
 	// 这里需要调用tools中的函数，但由于包结构限制，我们直接实现
 	// 或者可以通过HTTP调用独立的工具程序
-	
+
 	// 简化实现：直接使用HTTP请求
 	ctx := context.Background()
 	var allTrades []logger.TradeDetail
@@ -910,6 +914,8 @@ func (at *AutoTrader) buildTradingContext() (*decisionpkg.Context, error) {
 		Positions:      positionInfos,
 		CandidateCoins: candidateCoins,
 		Performance:    performance, // 添加历史表现分析
+		PromptFields:   at.config.PromptDataFields,
+		RAGEnabled:     at.config.RAGEnabled,
 	}
 
 	return ctx, nil
@@ -1255,10 +1261,10 @@ func (at *AutoTrader) GetAccountInfo() (map[string]interface{}, error) {
 		"daily_pnl":            at.dailyPnL,        // 日盈亏
 
 		// 持仓信息
-		"position_count":   len(positions),   // 持仓数量
-		"margin_used":      totalMarginUsed,   // 保证金占用
-		"margin_used_pct":  marginUsedPct,    // 保证金使用率
-		"available_margin":  availableMargin,   // 剩余可用保证金
+		"position_count":   len(positions),  // 持仓数量
+		"margin_used":      totalMarginUsed, // 保证金占用
+		"margin_used_pct":  marginUsedPct,   // 保证金使用率
+		"available_margin": availableMargin, // 剩余可用保证金
 	}, nil
 }
 

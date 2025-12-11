@@ -70,6 +70,8 @@ type Context struct {
 	Performance     interface{}             `json:"-"` // 历史表现分析（logger.PerformanceAnalysis）
 	BTCETHLeverage  int                     `json:"-"` // BTC/ETH杠杆倍数（从配置读取）
 	AltcoinLeverage int                     `json:"-"` // 山寨币杠杆倍数（从配置读取）
+	PromptFields    []string                `json:"-"` // 选用的数据字段
+	RAGEnabled      bool                    `json:"-"` // 是否启用RAG
 }
 
 // Decision AI的交易决策
@@ -83,6 +85,19 @@ type Decision struct {
 	Confidence      int     `json:"confidence,omitempty"` // 信心度 (0-100)
 	RiskUSD         float64 `json:"risk_usd,omitempty"`   // 最大美元风险
 	Reasoning       string  `json:"reasoning"`
+}
+
+// DefaultPromptFields 默认选中的数据字段（前端初始全选）
+var DefaultPromptFields = []string{
+	"basic_price",
+	"indicators",
+	"multiframe",
+	"recent_move",
+	"positions_block",
+	"candidates_block",
+	"sharpe_block",
+	"market_summary",
+	"decision_hints",
 }
 
 // FullDecision AI的完整决策（包含思维链）
@@ -112,7 +127,7 @@ func GetFullDecision(ctx *Context, mcpClient *mcp.Client) (*FullDecision, error)
 
 	// 3. 构建 System Prompt（固定规则）和 User Prompt（动态数据）
 	systemPrompt := buildSystemPrompt(ctx.Account.TotalEquity, ctx.BTCETHLeverage, ctx.AltcoinLeverage)
-	userPrompt := buildUserPrompt(ctx)
+	userPrompt := buildUserPromptByFields(ctx, "")
 
 	// 4. 如果候选币种为0且无持仓，跳过AI调用，直接返回符合格式的空决策
 	if candidateCount == 0 && len(ctx.Positions) == 0 {
@@ -198,7 +213,7 @@ func GetFullDecisionWithCustomPrompt(ctx *Context, mcpClient *mcp.Client, custom
 	// 4. 构建 User Prompt（动态数据）
 	// 从systemPromptTemplate提取交易员名称用于RAG检索
 	traderName := ExtractTraderNameFromPrompt(systemPromptTemplate)
-	userPrompt := buildUserPromptWithRAG(ctx, traderName)
+	userPrompt := buildUserPromptByFields(ctx, traderName)
 
 	// 5. 如果候选币种为0且无持仓，跳过AI调用，直接返回符合格式的空决策
 	if candidateCount == 0 && len(ctx.Positions) == 0 {
@@ -539,6 +554,278 @@ func calculateMaxCandidates(ctx *Context) int {
 	// 因为候选池已经在 auto_trader.go 中筛选过了
 	// 固定分析前20个评分最高的币种（来自AI500）
 	return len(ctx.CandidateCoins)
+}
+
+// normalizePromptFields 归一化并去重字段列表；为空时使用默认字段
+func normalizePromptFields(fields []string) []string {
+	if len(fields) == 0 {
+		return DefaultPromptFields
+	}
+	fieldSet := make(map[string]bool)
+	var result []string
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" || fieldSet[f] {
+			continue
+		}
+		fieldSet[f] = true
+		result = append(result, f)
+	}
+	return result
+}
+
+// buildPromptDataConfig 根据字段集合构建市场数据格式化配置
+func buildPromptDataConfig(fieldSet map[string]bool) (*market.PromptDataConfig, *market.DataSchema) {
+	var categories []string
+	addCat := func(id string) {
+		for _, c := range categories {
+			if c == id {
+				return
+			}
+		}
+		categories = append(categories, id)
+	}
+
+	if fieldSet["basic_price"] {
+		addCat("basic_price")
+	}
+	if fieldSet["indicators"] {
+		addCat("technical_indicators")
+	}
+	if fieldSet["multiframe"] {
+		addCat("multi_timeframe")
+	}
+	if fieldSet["oi_funding"] {
+		addCat("open_interest")
+		addCat("funding_rate")
+	}
+	if fieldSet["rvol_ema_dev"] {
+		addCat("volume_analysis")
+		addCat("price_deviation")
+	}
+	if fieldSet["pdh_pdl"] {
+		addCat("liquidity_levels")
+	}
+	if fieldSet["market_condition"] {
+		addCat("market_condition")
+	}
+	if fieldSet["market_structure"] {
+		addCat("market_structure")
+	}
+	if fieldSet["fib_levels"] || fieldSet["ote_info"] {
+		addCat("fibonacci")
+	}
+	if fieldSet["pattern_recognition"] {
+		addCat("candlestick_patterns")
+	}
+	if fieldSet["longer_term"] {
+		addCat("longer_term")
+	}
+
+	cfg := &market.PromptDataConfig{
+		PromptName:       "dynamic",
+		DataCategories:   categories,
+		IncludeBTC:       true,
+		IncludeAccount:   true,
+		IncludePositions: fieldSet["positions_block"],
+		IncludeRAG:       fieldSet["rag_viewpoints"],
+		ShowFibLevels:    fieldSet["fib_levels"],
+		ShowOTE:          fieldSet["ote_info"],
+		ShowRecentMove:   fieldSet["recent_move"],
+	}
+	schema := market.GetDefaultDataSchema()
+	return cfg, schema
+}
+
+// buildUserPromptByFields 按字段集合构建User Prompt（支持RAG）
+func buildUserPromptByFields(ctx *Context, traderName string) string {
+	fields := normalizePromptFields(ctx.PromptFields)
+	fieldSet := make(map[string]bool)
+	for _, f := range fields {
+		fieldSet[f] = true
+	}
+
+	cfg, schema := buildPromptDataConfig(fieldSet)
+	formatData := func(data *market.Data) string {
+		return market.FormatDataByConfig(data, cfg, schema)
+	}
+
+	var sb strings.Builder
+
+	// 系统状态
+	sb.WriteString(fmt.Sprintf("**时间**: %s | **周期**: #%d | **运行**: %d分钟\n\n",
+		ctx.CurrentTime, ctx.CallCount, ctx.RuntimeMinutes))
+
+	// BTC 市场
+	if btcData, hasBTC := ctx.MarketDataMap["BTCUSDT"]; hasBTC {
+		sb.WriteString("**BTC**:\n")
+		sb.WriteString(formatData(btcData))
+		sb.WriteString("\n")
+	}
+
+	// 账户
+	sb.WriteString(fmt.Sprintf("**账户**: 净值%.2f | 余额%.2f (%.1f%%) | 盈亏%+.2f%% | 保证金%.1f%% (已用%.0f/可用%.0f) | 持仓%d个\n\n",
+		ctx.Account.TotalEquity,
+		ctx.Account.AvailableBalance,
+		(ctx.Account.AvailableBalance/ctx.Account.TotalEquity)*100,
+		ctx.Account.TotalPnLPct,
+		ctx.Account.MarginUsedPct,
+		ctx.Account.MarginUsed,
+		ctx.Account.AvailableMargin,
+		ctx.Account.PositionCount))
+
+	// 持仓
+	if fieldSet["positions_block"] {
+		if len(ctx.Positions) > 0 {
+			sb.WriteString("## 当前持仓\n")
+			for i, pos := range ctx.Positions {
+				holdingDuration := ""
+				if pos.UpdateTime > 0 {
+					durationMs := time.Now().UnixMilli() - pos.UpdateTime
+					durationMin := durationMs / (1000 * 60)
+					if durationMin < 60 {
+						holdingDuration = fmt.Sprintf(" | 持仓时长%d分钟", durationMin)
+					} else {
+						durationHour := durationMin / 60
+						durationMinRemainder := durationMin % 60
+						holdingDuration = fmt.Sprintf(" | 持仓时长%d小时%d分钟", durationHour, durationMinRemainder)
+					}
+				}
+
+				sb.WriteString(fmt.Sprintf("%d. %s %s | 入场价%.4f 当前价%.4f | 盈亏%+.2f%% | 杠杆%dx | 保证金%.0f | 强平价%.4f%s\n\n",
+					i+1, pos.Symbol, strings.ToUpper(pos.Side),
+					pos.EntryPrice, pos.MarkPrice, pos.UnrealizedPnLPct,
+					pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
+
+				if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
+					sb.WriteString(formatData(marketData))
+					sb.WriteString("\n")
+				}
+			}
+		} else {
+			sb.WriteString("**当前持仓**: 无\n\n")
+		}
+	}
+
+	// 候选币种
+	if fieldSet["candidates_block"] {
+		sb.WriteString(fmt.Sprintf("## 候选币种 (%d个)\n\n", len(ctx.MarketDataMap)))
+		displayedCount := 0
+		for _, coin := range ctx.CandidateCoins {
+			marketData, hasData := ctx.MarketDataMap[coin.Symbol]
+			if !hasData {
+				continue
+			}
+			displayedCount++
+
+			sourceTags := ""
+			if len(coin.Sources) > 1 {
+				sourceTags = " (AI500+OI_Top双重信号)"
+			} else if len(coin.Sources) == 1 && coin.Sources[0] == "oi_top" {
+				sourceTags = " (OI_Top持仓增长)"
+			}
+
+			sb.WriteString(fmt.Sprintf("### %d. %s%s\n\n", displayedCount, coin.Symbol, sourceTags))
+			sb.WriteString(formatData(marketData))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// 夏普比率
+	if fieldSet["sharpe_block"] && ctx.Performance != nil {
+		type PerformanceData struct {
+			SharpeRatio float64 `json:"sharpe_ratio"`
+		}
+		var perfData PerformanceData
+		if jsonData, err := json.Marshal(ctx.Performance); err == nil {
+			if err := json.Unmarshal(jsonData, &perfData); err == nil {
+				sb.WriteString(fmt.Sprintf("## 📊 夏普比率: %.2f\n\n", perfData.SharpeRatio))
+			}
+		}
+	}
+
+	// 市场状态摘要
+	if fieldSet["market_summary"] {
+		sb.WriteString("## 🌊 市场状态摘要\n")
+		trendingCount, rangingCount, volatileCount := 0, 0, 0
+		for symbol, data := range ctx.MarketDataMap {
+			if symbol == "BTCUSDT" {
+				continue
+			}
+			condition := market.DetectMarketCondition(data)
+			switch condition.Condition {
+			case "trending":
+				trendingCount++
+			case "ranging":
+				rangingCount++
+			case "volatile":
+				volatileCount++
+			}
+		}
+
+		sb.WriteString(fmt.Sprintf("- 📈 趋势市: %d个币种\n", trendingCount))
+		sb.WriteString(fmt.Sprintf("- 🔄 震荡市: %d个币种\n", rangingCount))
+		sb.WriteString(fmt.Sprintf("- 🌊 波动市: %d个币种\n\n", volatileCount))
+
+		if rangingCount > len(ctx.MarketDataMap)/2 {
+			sb.WriteString("🚨 **市场整体处于震荡状态**：建议谨慎开仓，耐心等待趋势突破！\n\n")
+		}
+	}
+
+	// RAG 历史观点
+	if ctx.RAGEnabled && fieldSet["rag_viewpoints"] && traderName != "" {
+		ragClient, err := NewChromaDBRAGClient()
+		if err != nil {
+			log.Printf("⚠️  创建RAG客户端失败: %v", err)
+		} else {
+			ragResult, err := ragClient.RetrieveTraderViewpoints(traderName, 5)
+			if err != nil {
+				log.Printf("⚠️  RAG检索失败: %v", err)
+			} else if ragResult != nil && len(ragResult.Viewpoints) > 0 {
+				ragContext := FormatRAGContext(ragResult)
+				sb.WriteString(ragContext)
+			} else {
+				log.Printf("ℹ️  交易员'%s'未找到历史观点", traderName)
+			}
+		}
+	}
+
+	// 决策字段提示
+	if fieldSet["decision_hints"] {
+		maxRisk := ctx.Account.TotalEquity * 0.02
+		maxBTCETH := ctx.Account.TotalEquity * 10.0
+		maxALT := ctx.Account.TotalEquity * 1.5
+
+		hints := map[string]interface{}{
+			"decision_field_hints": map[string]interface{}{
+				"risk_usd_max": maxRisk,
+				"leverage_max": map[string]int{
+					"btc_eth": ctx.BTCETHLeverage,
+					"alt":     ctx.AltcoinLeverage,
+				},
+				"position_size_usd_max": map[string]float64{
+					"btc_eth": maxBTCETH,
+					"alt":     maxALT,
+				},
+				"stop_loss":   map[string]bool{"must_be_positive": true},
+				"take_profit": map[string]bool{"must_be_positive": true},
+			},
+		}
+
+		if b, err := json.MarshalIndent(hints, "", "  "); err == nil {
+			sb.WriteString("## 决策字段数值提示（机器可读）\n")
+			sb.WriteString("以下数值仅用于信息再次确认，请严格遵守 system prompt 的结构化输出与校验规则。\n\n")
+			sb.WriteString("```json\n")
+			sb.WriteString(string(b))
+			sb.WriteString("\n`````\n\n")
+		}
+	}
+
+	sb.WriteString("---\n\n")
+	sb.WriteString("现在请分析并输出决策（思维链 + JSON）\n")
+
+	return sb.String()
 }
 
 // replacePromptPlaceholders 替换模板中的占位符（支持简单数学表达式）
@@ -1241,6 +1528,10 @@ func buildUserPrompt(ctx *Context) string {
 
 // buildUserPromptWithRAG 构建带RAG功能的User Prompt（在技术指标后添加历史观点）
 func buildUserPromptWithRAG(ctx *Context, traderName string) string {
+	if strings.EqualFold(traderName, "pentosh1") {
+		return buildPentosh1UserPrompt(ctx)
+	}
+
 	var sb strings.Builder
 
 	// 系统状态
@@ -1436,6 +1727,173 @@ func buildUserPromptWithRAG(ctx *Context, traderName string) string {
 
 	sb.WriteString("---\n\n")
 	sb.WriteString("现在请分析并输出决策（思维链 + JSON）\n")
+
+	return sb.String()
+}
+
+// buildPentosh1UserPrompt 针对 Pentosh1 策略的定制 User Prompt（包含 logic_analysis RAG）
+func buildPentosh1UserPrompt(ctx *Context) string {
+	var sb strings.Builder
+
+	// 系统状态
+	sb.WriteString(fmt.Sprintf("**时间**: %s | **周期**: #%d | **运行**: %d分钟\n\n",
+		ctx.CurrentTime, ctx.CallCount, ctx.RuntimeMinutes))
+
+	// BTC 市场
+	if btcData, hasBTC := ctx.MarketDataMap["BTCUSDT"]; hasBTC {
+		btcCondition := market.DetectMarketCondition(btcData)
+		sb.WriteString(fmt.Sprintf("**BTC**: %.2f (1h: %+.2f%%, 4h: %+.2f%%, 1d: %+.2f%%) | MACD: %.4f | RSI: %.2f | 状态: %s(%d%%)\n\n",
+			btcData.CurrentPrice, btcData.PriceChange1h, btcData.PriceChange4h, btcData.PriceChange1d,
+			btcData.CurrentMACD, btcData.CurrentRSI7,
+			btcCondition.Condition, btcCondition.Confidence))
+	}
+
+	// 账户
+	sb.WriteString(fmt.Sprintf("**账户**: 净值%.2f | 余额%.2f (%.1f%%) | 盈亏%+.2f%% | 保证金%.1f%% (已用%.0f/可用%.0f) | 持仓%d个\n\n",
+		ctx.Account.TotalEquity,
+		ctx.Account.AvailableBalance,
+		(ctx.Account.AvailableBalance/ctx.Account.TotalEquity)*100,
+		ctx.Account.TotalPnLPct,
+		ctx.Account.MarginUsedPct,
+		ctx.Account.MarginUsed,
+		ctx.Account.AvailableMargin,
+		ctx.Account.PositionCount))
+
+	// 持仓（精简版市场数据）
+	if len(ctx.Positions) > 0 {
+		sb.WriteString("## 当前持仓\n")
+		for i, pos := range ctx.Positions {
+			holdingDuration := ""
+			if pos.UpdateTime > 0 {
+				durationMs := time.Now().UnixMilli() - pos.UpdateTime
+				durationMin := durationMs / (1000 * 60)
+				if durationMin < 60 {
+					holdingDuration = fmt.Sprintf(" | 持仓时长%d分钟", durationMin)
+				} else {
+					durationHour := durationMin / 60
+					durationMinRemainder := durationMin % 60
+					holdingDuration = fmt.Sprintf(" | 持仓时长%d小时%d分钟", durationHour, durationMinRemainder)
+				}
+			}
+
+			sb.WriteString(fmt.Sprintf("%d. %s %s | 入场价%.4f 当前价%.4f | 盈亏%+.2f%% | 杠杆%dx | 保证金%.0f | 强平价%.4f%s\n",
+				i+1, pos.Symbol, strings.ToUpper(pos.Side),
+				pos.EntryPrice, pos.MarkPrice, pos.UnrealizedPnLPct,
+				pos.Leverage, pos.MarginUsed, pos.LiquidationPrice, holdingDuration))
+
+			if marketData, ok := ctx.MarketDataMap[pos.Symbol]; ok {
+				sb.WriteString(FormatPentosh1(marketData))
+				sb.WriteString("\n")
+			}
+		}
+	} else {
+		sb.WriteString("**当前持仓**: 无\n\n")
+	}
+
+	// 候选币种（精简版市场数据）
+	sb.WriteString(fmt.Sprintf("## 候选币种 (%d个)\n\n", len(ctx.CandidateCoins)))
+	displayedCount := 0
+	for _, coin := range ctx.CandidateCoins {
+		marketData, hasData := ctx.MarketDataMap[coin.Symbol]
+		if !hasData {
+			continue
+		}
+		displayedCount++
+
+		sourceTags := ""
+		if len(coin.Sources) > 1 {
+			sourceTags = " (AI500+OI_Top双重信号)"
+		} else if len(coin.Sources) == 1 && coin.Sources[0] == "oi_top" {
+			sourceTags = " (OI_Top持仓增长)"
+		}
+
+		sb.WriteString(fmt.Sprintf("### %d. %s%s\n\n", displayedCount, coin.Symbol, sourceTags))
+		sb.WriteString(FormatPentosh1(marketData))
+		sb.WriteString("\n")
+	}
+	if displayedCount == 0 {
+		sb.WriteString("（无候选币种通过筛选）\n\n")
+	}
+
+	// logic_analysis RAG（最近20条新闻逻辑）
+	newsItems, err := fetchLatestLogicNews(20)
+	if err != nil {
+		log.Printf("⚠️  读取logic_analysis失败: %v", err)
+	}
+	if len(newsItems) > 0 {
+		sb.WriteString(formatLogicNewsForPrompt(newsItems))
+	} else {
+		sb.WriteString("## 📰 宏观RAG：未找到最近新闻逻辑\n\n")
+	}
+
+	return sb.String()
+}
+
+// FormatPentosh1 为 Pentosh1/1bxxx 风格的 user prompt 输出精简行情块
+func FormatPentosh1(data *market.Data) string {
+	if data == nil {
+		return "无市场数据"
+	}
+
+	var sb strings.Builder
+
+	condition := market.DetectMarketCondition(data)
+	sb.WriteString(fmt.Sprintf("💰 现价: %.4f | 1h:%+.2f%% | 4h:%+.2f%% | 1d:%+.2f%%\n",
+		data.CurrentPrice, data.PriceChange1h, data.PriceChange4h, data.PriceChange1d))
+	sb.WriteString(fmt.Sprintf("🌊 状态: %s(%d%%)\n", condition.Condition, condition.Confidence))
+
+	// 多周期趋势快照（压缩格式）
+	if data.MultiTimeframe != nil {
+		var tfNotes []string
+		if tf1h := data.MultiTimeframe.Timeframe1h; tf1h != nil {
+			tfNotes = append(tfNotes, fmt.Sprintf("1h:%s(%d)", tf1h.TrendDirection, tf1h.SignalStrength))
+		}
+		if tf4h := data.MultiTimeframe.Timeframe4h; tf4h != nil {
+			tfNotes = append(tfNotes, fmt.Sprintf("4h:%s(%d)", tf4h.TrendDirection, tf4h.SignalStrength))
+		}
+		if tf1d := data.MultiTimeframe.Timeframe1d; tf1d != nil {
+			tfNotes = append(tfNotes, fmt.Sprintf("1d:%s(%d)", tf1d.TrendDirection, tf1d.SignalStrength))
+		}
+		if len(tfNotes) > 0 {
+			sb.WriteString(fmt.Sprintf("⏰ 多周期: %s\n", strings.Join(tfNotes, " | ")))
+		}
+	}
+
+	// OI 与资金费率
+	if data.OpenInterest != nil && data.OpenInterest.Latest > 0 {
+		sb.WriteString(fmt.Sprintf("📈 OI: %.0f | 1h:%+.2f%% | 4h:%+.2f%%\n",
+			data.OpenInterest.Latest, data.OpenInterest.Change1h, data.OpenInterest.Change4h))
+	}
+	if data.FundingRate != nil {
+		sb.WriteString(fmt.Sprintf("💸 资金费率: %.4f%% | 4hΔ: %+0.2fbp\n",
+			data.FundingRate.Latest*100, data.FundingRate.Change4h))
+	}
+
+	// 成交量与偏离
+	if data.RVol > 0 {
+		sb.WriteString(fmt.Sprintf("📊 RVol: %.2fx\n", data.RVol))
+	}
+	if data.EMADeviation != 0 {
+		sb.WriteString(fmt.Sprintf("🔎 EMA偏离: %+.2f%%\n", data.EMADeviation))
+	}
+
+	// 结构与关键位
+	if data.MarketStructure != nil {
+		sb.WriteString(fmt.Sprintf("🏗️ 结构: %s | 高点%d/低点%d\n",
+			data.MarketStructure.CurrentBias,
+			len(data.MarketStructure.SwingHighs),
+			len(data.MarketStructure.SwingLows)))
+	}
+	if data.FibLevels != nil {
+		sb.WriteString(fmt.Sprintf("📐 OTE: %.4f-%.4f | 0.5: %.4f\n",
+			data.FibLevels.Level618, data.FibLevels.Level705, data.FibLevels.Level500))
+	}
+	if data.PDH > 0 && data.PDL > 0 {
+		distToPDH := ((data.CurrentPrice - data.PDH) / data.PDH) * 100
+		distToPDL := ((data.CurrentPrice - data.PDL) / data.PDL) * 100
+		sb.WriteString(fmt.Sprintf("🎯 PDH %.4f(%+.2f%%) | PDL %.4f(%+.2f%%)\n",
+			data.PDH, distToPDH, data.PDL, distToPDL))
+	}
 
 	return sb.String()
 }

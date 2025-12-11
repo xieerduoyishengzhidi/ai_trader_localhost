@@ -3,6 +3,39 @@ import type { AIModel, Exchange, CreateTraderRequest } from '../types'
 import { useLanguage } from '../contexts/LanguageContext'
 import { t } from '../i18n/translations'
 
+const DEFAULT_PROMPT_FIELDS = [
+  'basic_price',
+  'indicators',
+  'multiframe',
+  'recent_move',
+  'positions_block',
+  'candidates_block',
+  'sharpe_block',
+  'market_summary',
+  'decision_hints',
+]
+
+const PROMPT_OPTIONS: { id: string; label: string }[] = [
+  { id: 'basic_price', label: '基础价格' },
+  { id: 'indicators', label: '技术指标' },
+  { id: 'multiframe', label: '多周期快照' },
+  { id: 'recent_move', label: '近期价格变动' },
+  { id: 'positions_block', label: '当前持仓' },
+  { id: 'candidates_block', label: '候选币行情' },
+  { id: 'sharpe_block', label: '夏普比率' },
+  { id: 'market_summary', label: '市场状态摘要' },
+  { id: 'decision_hints', label: '决策字段提示' },
+  { id: 'market_structure', label: '市场结构' },
+  { id: 'fib_levels', label: '斐波那契水平' },
+  { id: 'ote_info', label: 'OTE 区间提示' },
+  { id: 'oi_funding', label: '持仓量/资金费率' },
+  { id: 'rvol_ema_dev', label: 'RVol/EMA偏离' },
+  { id: 'pdh_pdl', label: '前高前低' },
+  { id: 'pattern_recognition', label: '形态识别' },
+  { id: 'longer_term', label: '长期数据' },
+  { id: 'market_condition', label: '市场状态详情' },
+]
+
 // 提取下划线后面的名称部分
 function getShortName(fullName: string): string {
   const parts = fullName.split('_')
@@ -25,6 +58,8 @@ interface TraderConfigData {
   use_oi_top: boolean
   initial_balance: number
   scan_interval_minutes: number
+  prompt_data_fields: string[]
+  rag_enabled: boolean
 }
 
 interface TraderConfigModalProps {
@@ -62,6 +97,8 @@ export function TraderConfigModal({
     use_oi_top: false,
     initial_balance: 1000,
     scan_interval_minutes: 3,
+    prompt_data_fields: DEFAULT_PROMPT_FIELDS,
+    rag_enabled: false,
   })
   const [isSaving, setIsSaving] = useState(false)
   const [availableCoins, setAvailableCoins] = useState<string[]>([])
@@ -71,7 +108,14 @@ export function TraderConfigModal({
 
   useEffect(() => {
     if (traderData) {
-      setFormData(traderData)
+      setFormData({
+        ...traderData,
+        prompt_data_fields:
+          traderData.prompt_data_fields && traderData.prompt_data_fields.length > 0
+            ? traderData.prompt_data_fields
+            : DEFAULT_PROMPT_FIELDS,
+        rag_enabled: traderData.rag_enabled ?? false,
+      })
       // 设置已选择的币种
       if (traderData.trading_symbols) {
         const coins = traderData.trading_symbols
@@ -96,6 +140,8 @@ export function TraderConfigModal({
         use_oi_top: false,
         initial_balance: 1000,
         scan_interval_minutes: 3,
+        prompt_data_fields: DEFAULT_PROMPT_FIELDS,
+        rag_enabled: false,
       })
     }
     // 确保旧数据也有默认的 system_prompt_template
@@ -182,6 +228,16 @@ export function TraderConfigModal({
     })
   }
 
+  const handlePromptFieldToggle = (fieldId: string) => {
+    setFormData((prev) => {
+      const exists = prev.prompt_data_fields.includes(fieldId)
+      const next = exists
+        ? prev.prompt_data_fields.filter((f) => f !== fieldId)
+        : [...prev.prompt_data_fields, fieldId]
+      return { ...prev, prompt_data_fields: next }
+    })
+  }
+
   const handleSave = async () => {
     if (!onSave) return
 
@@ -202,6 +258,8 @@ export function TraderConfigModal({
         use_oi_top: formData.use_oi_top,
         initial_balance: formData.initial_balance,
         scan_interval_minutes: formData.scan_interval_minutes,
+        prompt_data_fields: formData.prompt_data_fields,
+        rag_enabled: formData.rag_enabled,
       }
       await onSave(saveData)
       onClose()
@@ -553,6 +611,34 @@ export function TraderConfigModal({
                 </p>
               </div>
 
+              {/* 数据字段选择 */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm text-[#EAECEF]">
+                    数据字段选择（默认已勾选常用字段，可自行取消/添加）
+                  </label>
+                  <span className="text-xs text-[#848E9C]">
+                    默认: {DEFAULT_PROMPT_FIELDS.join(', ')}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  {PROMPT_OPTIONS.map((opt) => (
+                    <label
+                      key={opt.id}
+                      className="flex items-center gap-2 text-sm text-[#EAECEF] bg-[#0B0E11] border border-[#2B3139] rounded px-2 py-2"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={formData.prompt_data_fields.includes(opt.id)}
+                        onChange={() => handlePromptFieldToggle(opt.id)}
+                        className="w-4 h-4"
+                      />
+                      <span>{opt.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
               <div className="flex items-center gap-3">
                 <input
                   type="checkbox"
@@ -599,6 +685,18 @@ export function TraderConfigModal({
                       : '输入额外的交易策略提示...'
                   }
                 />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <input
+                  type="checkbox"
+                  checked={formData.rag_enabled}
+                  onChange={(e) =>
+                    handleInputChange('rag_enabled', e.target.checked)
+                  }
+                  className="w-4 h-4"
+                />
+                <label className="text-sm text-[#EAECEF]">开启 RAG 历史观点</label>
               </div>
             </div>
           </div>

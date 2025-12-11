@@ -136,6 +136,8 @@ export interface CreateTraderRequest {
   is_cross_margin?: boolean
   use_coin_pool?: boolean
   use_oi_top?: boolean
+  prompt_data_fields?: string[]
+  rag_enabled?: boolean
 }
 
 export interface UpdateModelConfigRequest {
@@ -202,4 +204,6 @@ export interface TraderConfigData {
   initial_balance: number
   scan_interval_minutes: number
   is_running: boolean
+  prompt_data_fields?: string[]
+  rag_enabled?: boolean
 }
