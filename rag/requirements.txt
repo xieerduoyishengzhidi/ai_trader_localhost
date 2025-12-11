@@ -3,4 +3,7 @@ flask>=2.0.0
 rank-bm25>=0.2.2
 sentence-transformers>=2.2.0
 requests>=2.31.0
+openai>=1.52.0
+trafilatura>=1.7.0
+instructor>=1.4.0
 

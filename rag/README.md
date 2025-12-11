@@ -54,6 +54,18 @@ Go 代码会自动调用 ChromaDB RAG API，无需额外配置。
 $env:CHROMADB_RAG_API_URL="http://127.0.0.1:8765"
 ```
 
+### 4. Level 2 因果逻辑引擎（新闻 → JSON）
+
+```powershell
+$env:DEEPSEEK_API_KEY="your_key"
+# 可选：设置 pentosh1.db 路径（默认 ../filter/pentosh1.db）
+# $env:PENTOSHI_DB_PATH="E:\nofx-dev\filter\pentosh1.db"
+python rag/logic_level2.py
+```
+
+- 输入：新闻（title/summary 或通过 URL 抓正文）+ 市场上下文（可选，默认取 pentosh1.db 的 macro 字段）+ RAG 记忆（自动调用 `/query`，使用抓取后的正文）。
+- 输出：新版因果 JSON（signal + causal_logic + invalidation + is_actionable），可直接写入决策/数据库。
+
 ## API 接口
 
 ### 健康检查
