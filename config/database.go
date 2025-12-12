@@ -172,6 +172,13 @@ func (d *Database) createTables() error {
 			leverage INTEGER,
 			price REAL,
 			order_id INTEGER,
+			open_action_id INTEGER,
+			position_id TEXT,
+			closed BOOLEAN DEFAULT 0,
+			close_time DATETIME,
+			pnl REAL,
+			pnl_ratio REAL,
+			fee REAL,
 			timestamp DATETIME,
 			success BOOLEAN DEFAULT 0,
 			error TEXT,
@@ -204,8 +211,19 @@ func (d *Database) createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_trader_timestamp ON trader_decision_logs(trader_id, timestamp)`,
 		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_log_id ON trader_decision_actions(decision_log_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_order_id ON trader_decision_actions(order_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_open_action_id ON trader_decision_actions(open_action_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_position_id ON trader_decision_actions(position_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_trader_trade_details_action_id ON trader_trade_details(decision_action_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_trader_trade_details_trade_id ON trader_trade_details(trade_id)`,
+
+		// 兼容旧库：为 trader_decision_actions 增加新列
+		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS open_action_id INTEGER`,
+		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS position_id TEXT`,
+		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS closed BOOLEAN DEFAULT 0`,
+		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS close_time DATETIME`,
+		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS pnl REAL`,
+		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS pnl_ratio REAL`,
+		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS fee REAL`,
 
 		// 触发器：自动更新 updated_at
 		`CREATE TRIGGER IF NOT EXISTS update_users_updated_at
@@ -1224,20 +1242,27 @@ type TraderDecisionLog struct {
 
 // TraderDecisionAction 决策动作（对应 DecisionAction）
 type TraderDecisionAction struct {
-	ID            int64     `json:"id"`
-	DecisionLogID int64     `json:"decision_log_id"`
-	Action        string    `json:"action"`        // open_long, open_short, close_long, close_short
-	Symbol        string    `json:"symbol"`        // 币种
-	Quantity      float64   `json:"quantity"`      // 数量
-	Leverage      int       `json:"leverage"`      // 杠杆
-	Price         float64   `json:"price"`         // 执行价格
-	OrderID       int64     `json:"order_id"`      // 订单ID
-	Timestamp     time.Time `json:"timestamp"`     // 执行时间
-	Success       bool      `json:"success"`       // 是否成功
-	Error         string    `json:"error"`         // 错误信息
-	TradeChecked  bool      `json:"trade_checked"` // 是否已检测成交
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID            int64      `json:"id"`
+	DecisionLogID int64      `json:"decision_log_id"`
+	Action        string     `json:"action"`         // open_long, open_short, close_long, close_short
+	Symbol        string     `json:"symbol"`         // 币种
+	Quantity      float64    `json:"quantity"`       // 数量
+	Leverage      int        `json:"leverage"`       // 杠杆
+	Price         float64    `json:"price"`          // 执行价格
+	OrderID       int64      `json:"order_id"`       // 订单ID
+	OpenActionID  int64      `json:"open_action_id"` // 平仓时指向对应的开仓动作
+	PositionID    string     `json:"position_id"`    // 同一笔仓位共享的ID
+	Closed        bool       `json:"closed"`         // 开仓是否已被平仓
+	CloseTime     *time.Time `json:"close_time"`     // 平仓时间，可为空
+	PNL           float64    `json:"pnl"`            // 已实现盈亏
+	PNLRatio      float64    `json:"pnl_ratio"`      // 盈亏率
+	Fee           float64    `json:"fee"`            // 平仓手续费
+	Timestamp     time.Time  `json:"timestamp"`      // 执行时间
+	Success       bool       `json:"success"`        // 是否成功
+	Error         string     `json:"error"`          // 错误信息
+	TradeChecked  bool       `json:"trade_checked"`  // 是否已检测成交
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // TraderTradeDetail 成交详情（对应 TradeDetail）
@@ -1283,12 +1308,15 @@ func (d *Database) SaveTraderDecisionAction(action *TraderDecisionAction) (int64
 	result, err := d.db.Exec(`
 		INSERT INTO trader_decision_actions (
 			decision_log_id, action, symbol, quantity, leverage, price,
-			order_id, timestamp, success, error, trade_checked
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			order_id, open_action_id, position_id, closed, close_time,
+			pnl, pnl_ratio, fee, timestamp, success, error, trade_checked
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`,
 		action.DecisionLogID, action.Action, action.Symbol, action.Quantity,
-		action.Leverage, action.Price, action.OrderID, action.Timestamp,
-		action.Success, action.Error, action.TradeChecked,
+		action.Leverage, action.Price, action.OrderID, action.OpenActionID,
+		action.PositionID, action.Closed, action.CloseTime, action.PNL,
+		action.PNLRatio, action.Fee, action.Timestamp, action.Success,
+		action.Error, action.TradeChecked,
 	)
 	if err != nil {
 		return 0, err
@@ -1356,7 +1384,9 @@ func (d *Database) GetTraderDecisionLogs(traderID string, limit int) ([]*TraderD
 func (d *Database) GetTraderDecisionActions(decisionLogID int64) ([]*TraderDecisionAction, error) {
 	rows, err := d.db.Query(`
 		SELECT id, decision_log_id, action, symbol, quantity, leverage, price,
-		       order_id, timestamp, success, error, trade_checked, created_at, updated_at
+		       order_id, open_action_id, position_id, closed, close_time,
+		       pnl, pnl_ratio, fee, timestamp, success, error, trade_checked,
+		       created_at, updated_at
 		FROM trader_decision_actions
 		WHERE decision_log_id = ?
 		ORDER BY timestamp ASC
@@ -1369,14 +1399,20 @@ func (d *Database) GetTraderDecisionActions(decisionLogID int64) ([]*TraderDecis
 	var actions []*TraderDecisionAction
 	for rows.Next() {
 		action := &TraderDecisionAction{}
+		var closeTime sql.NullTime
 		err := rows.Scan(
 			&action.ID, &action.DecisionLogID, &action.Action, &action.Symbol,
 			&action.Quantity, &action.Leverage, &action.Price, &action.OrderID,
-			&action.Timestamp, &action.Success, &action.Error, &action.TradeChecked,
+			&action.OpenActionID, &action.PositionID, &action.Closed, &closeTime,
+			&action.PNL, &action.PNLRatio, &action.Fee, &action.Timestamp,
+			&action.Success, &action.Error, &action.TradeChecked,
 			&action.CreatedAt, &action.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
+		}
+		if closeTime.Valid {
+			action.CloseTime = &closeTime.Time
 		}
 		actions = append(actions, action)
 	}
