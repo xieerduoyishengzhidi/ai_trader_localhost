@@ -51,30 +51,37 @@ type PositionSnapshot struct {
 
 // DecisionAction 决策动作
 type DecisionAction struct {
-	Action       string         `json:"action"`        // open_long, open_short, close_long, close_short
-	Symbol       string         `json:"symbol"`        // 币种
-	Quantity     float64        `json:"quantity"`      // 数量
-	Leverage     int            `json:"leverage"`       // 杠杆（开仓时）
-	Price        float64        `json:"price"`         // 执行价格
-	OrderID      int64          `json:"order_id"`      // 订单ID
-	Timestamp    time.Time      `json:"timestamp"`     // 执行时间
-	Success      bool           `json:"success"`       // 是否成功
-	Error        string         `json:"error"`         // 错误信息
-	TradeDetails []TradeDetail  `json:"trade_details"` // 成交详情（从币安API获取）
-	TradeChecked bool           `json:"trade_checked"` // 是否已检测成交
+	Action       string        `json:"action"`         // open_long, open_short, close_long, close_short
+	Symbol       string        `json:"symbol"`         // 币种
+	Quantity     float64       `json:"quantity"`       // 数量
+	Leverage     int           `json:"leverage"`       // 杠杆（开仓时）
+	Price        float64       `json:"price"`          // 执行价格
+	OrderID      int64         `json:"order_id"`       // 订单ID
+	PositionID   string        `json:"position_id"`    // 一笔仓位的ID（开仓生成，平仓沿用）
+	OpenActionID int64         `json:"open_action_id"` // 平仓指向开仓动作（如有持久化ID则写入，没有则可为0）
+	Closed       bool          `json:"closed"`         // 开仓是否已被平
+	CloseTime    *time.Time    `json:"close_time"`     // 平仓时间
+	PNL          float64       `json:"pnl"`            // 已实现盈亏
+	PNLRatio     float64       `json:"pnl_ratio"`      // 盈亏率
+	Fee          float64       `json:"fee"`            // 平仓侧手续费
+	Timestamp    time.Time     `json:"timestamp"`      // 执行时间
+	Success      bool          `json:"success"`        // 是否成功
+	Error        string        `json:"error"`          // 错误信息
+	TradeDetails []TradeDetail `json:"trade_details"`  // 成交详情（从币安API获取）
+	TradeChecked bool          `json:"trade_checked"`  // 是否已检测成交
 }
 
 // TradeDetail 成交详情
 type TradeDetail struct {
-	TradeID         int64   `json:"trade_id"`          // 交易ID
-	Price           float64 `json:"price"`             // 成交价格
-	Quantity        float64 `json:"quantity"`           // 成交数量
-	QuoteQuantity   float64 `json:"quote_quantity"`    // 成交额
-	Commission      float64 `json:"commission"`         // 手续费
-	CommissionAsset string  `json:"commission_asset"`  // 手续费币种
-	Time            int64   `json:"time"`              // 成交时间（毫秒时间戳）
-	IsBuyer         bool    `json:"is_buyer"`          // 是否买方
-	IsMaker         bool    `json:"is_maker"`          // 是否做市商
+	TradeID         int64   `json:"trade_id"`         // 交易ID
+	Price           float64 `json:"price"`            // 成交价格
+	Quantity        float64 `json:"quantity"`         // 成交数量
+	QuoteQuantity   float64 `json:"quote_quantity"`   // 成交额
+	Commission      float64 `json:"commission"`       // 手续费
+	CommissionAsset string  `json:"commission_asset"` // 手续费币种
+	Time            int64   `json:"time"`             // 成交时间（毫秒时间戳）
+	IsBuyer         bool    `json:"is_buyer"`         // 是否买方
+	IsMaker         bool    `json:"is_maker"`         // 是否做市商
 }
 
 // DecisionLogger 决策日志记录器

@@ -101,7 +101,8 @@ type AutoTrader struct {
 	decisionLogger        *logger.DecisionLogger // 决策日志记录器
 	initialBalance        float64
 	dailyPnL              float64
-	customPrompt          string   // 自定义交易策略prompt
+	customPrompt          string // 自定义交易策略prompt
+	openPositions         map[string]*logger.DecisionAction
 	overrideBasePrompt    bool     // 是否覆盖基础prompt
 	systemPromptTemplate  string   // 系统提示词模板名称
 	defaultCoins          []string // 默认币种列表（从数据库获取）
@@ -230,6 +231,7 @@ func NewAutoTrader(config AutoTraderConfig) (*AutoTrader, error) {
 		mcpClient:             mcpClient,
 		decisionLogger:        decisionLogger,
 		initialBalance:        config.InitialBalance,
+		openPositions:         make(map[string]*logger.DecisionAction),
 		systemPromptTemplate:  systemPromptTemplate,
 		defaultCoins:          config.DefaultCoins,
 		tradingCoins:          config.TradingCoins,
@@ -623,6 +625,9 @@ func (at *AutoTrader) checkAndUpdateTrades(record *logger.DecisionRecord) {
 	}
 
 	// 如果有更新，保存到文件
+	if pairUpdated := at.pairPositionsAndPnL(record); pairUpdated {
+		hasUpdates = true
+	}
 	if hasUpdates {
 		if err := at.decisionLogger.UpdateDecisionWithTrades(record); err != nil {
 			log.Printf("⚠️  更新决策记录失败: %v", err)
@@ -630,6 +635,148 @@ func (at *AutoTrader) checkAndUpdateTrades(record *logger.DecisionRecord) {
 			log.Printf("📝 决策记录已更新成交数据")
 		}
 	}
+}
+
+// pairPositionsAndPnL 为平仓动作关联开仓，并计算盈亏
+func (at *AutoTrader) pairPositionsAndPnL(record *logger.DecisionRecord) bool {
+	updated := false
+
+	for i := range record.Decisions {
+		action := &record.Decisions[i]
+		side := at.actionSide(action.Action)
+		if side == "" {
+			continue
+		}
+
+		key := at.positionKey(action.Symbol, side)
+
+		// 开仓：补齐PositionID并登记
+		if strings.HasPrefix(action.Action, "open_") {
+			action.PositionID = at.ensurePositionID(action, action.Symbol, side)
+			action.Closed = false
+			at.openPositions[key] = action
+			continue
+		}
+
+		// 平仓：寻找对应开仓
+		if !strings.HasPrefix(action.Action, "close_") {
+			continue
+		}
+
+		openAction, ok := at.openPositions[key]
+		if !ok || openAction == nil || openAction.Closed {
+			continue
+		}
+
+		action.PositionID = openAction.PositionID
+
+		// 计算盈亏
+		pnl, ratio, closeFee := at.calculatePNL(openAction, action, side)
+		now := time.Now()
+
+		action.PNL = pnl
+		action.PNLRatio = ratio
+		action.Fee = closeFee
+		action.CloseTime = &now
+		action.Closed = true
+
+		openAction.PNL = pnl
+		openAction.PNLRatio = ratio
+		openAction.Fee += closeFee
+		openAction.CloseTime = &now
+		openAction.Closed = true
+
+		delete(at.openPositions, key)
+		updated = true
+	}
+
+	return updated
+}
+
+func (at *AutoTrader) ensurePositionID(action *logger.DecisionAction, symbol, side string) string {
+	if action.PositionID == "" {
+		action.PositionID = at.generatePositionID(symbol, side)
+	}
+	return action.PositionID
+}
+
+func (at *AutoTrader) generatePositionID(symbol, side string) string {
+	return fmt.Sprintf("%s-%s-%d", strings.ToUpper(symbol), side, time.Now().UnixNano())
+}
+
+func (at *AutoTrader) positionKey(symbol, side string) string {
+	return strings.ToUpper(symbol) + "_" + side
+}
+
+func (at *AutoTrader) actionSide(action string) string {
+	switch action {
+	case "open_long", "close_long":
+		return "long"
+	case "open_short", "close_short":
+		return "short"
+	default:
+		return ""
+	}
+}
+
+// attachOpenPosition 将平仓动作关联到开仓，并返回开仓动作指针
+func (at *AutoTrader) attachOpenPosition(action *logger.DecisionAction, symbol, side string) *logger.DecisionAction {
+	key := at.positionKey(symbol, side)
+	openAction, ok := at.openPositions[key]
+	if !ok || openAction == nil || openAction.Closed {
+		return nil
+	}
+
+	action.PositionID = openAction.PositionID
+	// 如果未来有持久化ID，可写入 openActionID；当前保留默认值
+	return openAction
+}
+
+func (at *AutoTrader) aggregateTradeStats(trades []logger.TradeDetail, fallbackPrice float64, fallbackQty float64) (qty float64, quote float64, fee float64) {
+	for _, t := range trades {
+		q := t.QuoteQuantity
+		if q == 0 {
+			q = t.Price * t.Quantity
+		}
+		qty += t.Quantity
+		quote += q
+		fee += t.Commission
+	}
+
+	// 如果无成交明细，使用回退价格和数量估算
+	if qty == 0 && fallbackQty > 0 {
+		qty = fallbackQty
+		quote = fallbackPrice * fallbackQty
+	}
+
+	return qty, quote, fee
+}
+
+func (at *AutoTrader) calculatePNL(openAction *logger.DecisionAction, closeAction *logger.DecisionAction, side string) (pnl float64, ratio float64, closeFee float64) {
+	openQty, openQuote, openFee := at.aggregateTradeStats(openAction.TradeDetails, openAction.Price, openAction.Quantity)
+	closeQty, closeQuote, closeFee := at.aggregateTradeStats(closeAction.TradeDetails, closeAction.Price, closeAction.Quantity)
+
+	if openQty == 0 || closeQty == 0 {
+		return 0, 0, closeFee
+	}
+
+	openNotional := openQuote
+	closeNotional := closeQuote
+	totalFee := openFee + closeFee
+
+	if side == "long" {
+		pnl = closeNotional - openNotional - totalFee
+	} else {
+		pnl = openNotional - closeNotional - totalFee
+	}
+
+	if openNotional != 0 {
+		ratio = pnl / openNotional
+	}
+
+	// 回写开仓手续费，便于后续统计
+	openAction.Fee = openFee
+	return pnl, ratio, closeFee
 }
 
 // getOrderTradesFromAPI 从币安API获取订单成交记录
@@ -982,6 +1129,11 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decisionpkg.Decision, 
 		actionRecord.OrderID = orderID
 	}
 
+	// 生成并记录仓位ID，标记为未平仓
+	actionRecord.PositionID = at.ensurePositionID(actionRecord, decision.Symbol, "long")
+	actionRecord.Closed = false
+	at.openPositions[at.positionKey(decision.Symbol, "long")] = actionRecord
+
 	log.Printf("  ✓ 开仓成功，订单ID: %v, 数量: %.4f", order["orderId"], quantity)
 
 	// 记录开仓时间
@@ -1041,6 +1193,11 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decisionpkg.Decision,
 		actionRecord.OrderID = orderID
 	}
 
+	// 生成并记录仓位ID，标记为未平仓
+	actionRecord.PositionID = at.ensurePositionID(actionRecord, decision.Symbol, "short")
+	actionRecord.Closed = false
+	at.openPositions[at.positionKey(decision.Symbol, "short")] = actionRecord
+
 	log.Printf("  ✓ 开仓成功，订单ID: %v, 数量: %.4f", order["orderId"], quantity)
 
 	// 记录开仓时间
@@ -1062,6 +1219,12 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decisionpkg.Decision,
 func (at *AutoTrader) executeCloseLongWithRecord(decision *decisionpkg.Decision, actionRecord *logger.DecisionAction) error {
 	log.Printf("  🔄 平多仓: %s", decision.Symbol)
 
+	// 关联到已开仓位
+	openAction := at.attachOpenPosition(actionRecord, decision.Symbol, "long")
+	if openAction == nil {
+		log.Printf("  ⚠ 未找到待平多仓的开仓记录，symbol=%s", decision.Symbol)
+	}
+
 	// 获取当前价格
 	marketData, err := market.Get(decision.Symbol)
 	if err != nil {
@@ -1081,12 +1244,23 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *decisionpkg.Decision,
 	}
 
 	log.Printf("  ✓ 平仓成功")
+
+	// 标记开仓已提交平仓请求，避免重复匹配
+	if openAction != nil {
+		openAction.Closed = true
+	}
 	return nil
 }
 
 // executeCloseShortWithRecord 执行平空仓并记录详细信息
 func (at *AutoTrader) executeCloseShortWithRecord(decision *decisionpkg.Decision, actionRecord *logger.DecisionAction) error {
 	log.Printf("  🔄 平空仓: %s", decision.Symbol)
+
+	// 关联到已开仓位
+	openAction := at.attachOpenPosition(actionRecord, decision.Symbol, "short")
+	if openAction == nil {
+		log.Printf("  ⚠ 未找到待平空仓的开仓记录，symbol=%s", decision.Symbol)
+	}
 
 	// 获取当前价格
 	marketData, err := market.Get(decision.Symbol)
@@ -1107,6 +1281,11 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *decisionpkg.Decision
 	}
 
 	log.Printf("  ✓ 平仓成功")
+
+	// 标记开仓已提交平仓请求，避免重复匹配
+	if openAction != nil {
+		openAction.Closed = true
+	}
 	return nil
 }
 

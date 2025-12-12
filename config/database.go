@@ -1475,12 +1475,40 @@ func (d *Database) GetTraderDecisionLogByID(id int64) (*TraderDecisionLog, error
 	return log, nil
 }
 
-// UpdateTraderDecisionAction 更新决策动作信息
-func (d *Database) UpdateTraderDecisionAction(id int64, quantity float64, price float64, orderID int64, success bool, errorMsg string, tradeChecked bool) error {
+// UpdateTraderDecisionAction 更新决策动作信息（含配对/盈亏字段）
+func (d *Database) UpdateTraderDecisionAction(action *TraderDecisionAction) error {
 	_, err := d.db.Exec(`
 		UPDATE trader_decision_actions
-		SET quantity = ?, price = ?, order_id = ?, success = ?, error = ?, trade_checked = ?
+		SET quantity = ?,
+			price = ?,
+			order_id = ?,
+			open_action_id = ?,
+			position_id = ?,
+			closed = ?,
+			close_time = ?,
+			pnl = ?,
+			pnl_ratio = ?,
+			fee = ?,
+			success = ?,
+			error = ?,
+			trade_checked = ?,
+			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, quantity, price, orderID, success, errorMsg, tradeChecked, id)
+	`,
+		action.Quantity,
+		action.Price,
+		action.OrderID,
+		action.OpenActionID,
+		action.PositionID,
+		action.Closed,
+		action.CloseTime,
+		action.PNL,
+		action.PNLRatio,
+		action.Fee,
+		action.Success,
+		action.Error,
+		action.TradeChecked,
+		action.ID,
+	)
 	return err
 }
