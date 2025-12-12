@@ -17,13 +17,18 @@
 """
 
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parent
 TARGET_DB = ROOT / "pentosh1.db"
 HISTORY_DB = ROOT.parent / "macro_service" / "history" / "history.sqlite3"
+HISTORY_BUILDER = ROOT.parent / "macro_service" / "build_yearly_history.py"
+REBUILD_ENV = os.getenv("REBUILD_HISTORY", "")
 
 
 def ensure_column(conn: sqlite3.Connection):
@@ -48,6 +53,21 @@ def load_history():
     return history
 
 
+def ensure_history_db():
+    """确保 macro_service/history/history.sqlite3 可用，缺失时调用构建脚本。"""
+    if HISTORY_DB.exists() and not REBUILD_ENV:
+        return
+    if not HISTORY_BUILDER.exists():
+        raise FileNotFoundError(f"未找到构建脚本: {HISTORY_BUILDER}")
+    print(f"[backfill] 正在生成/刷新历史库: {HISTORY_DB}")
+    try:
+        subprocess.check_call([sys.executable, str(HISTORY_BUILDER)], cwd=HISTORY_BUILDER.parent)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"构建历史库失败，退出码 {exc.returncode}") from exc
+    if not HISTORY_DB.exists():
+        raise FileNotFoundError(f"历史库仍不存在: {HISTORY_DB}")
+
+
 def find_payload(history, target_date):
     # 返回 <= target_date 的最近一条 payload
     payload = None
@@ -63,6 +83,8 @@ def backfill():
     if not TARGET_DB.exists():
         raise FileNotFoundError(f"目标库不存在: {TARGET_DB}")
 
+    # 确保历史库存在（可通过 REBUILD_HISTORY=1 强制重建）
+    ensure_history_db()
     history = load_history()
     if not history:
         raise RuntimeError("历史库无数据")
