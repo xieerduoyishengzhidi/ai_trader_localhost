@@ -13,6 +13,65 @@ import (
 	"time"
 )
 
+// KlineLimitConfig 配置每个时间框架获取的K线数量
+type KlineLimitConfig struct {
+	Limit15m int `json:"limit_15m"`
+	Limit1h  int `json:"limit_1h"`
+	Limit4h  int `json:"limit_4h"`
+	Limit1d  int `json:"limit_1d"`
+}
+
+var (
+	defaultKlineLimits = KlineLimitConfig{Limit15m: 40, Limit1h: 50, Limit4h: 60, Limit1d: 90}
+	maxKlineLimits     = KlineLimitConfig{Limit15m: 500, Limit1h: 500, Limit4h: 500, Limit1d: 500}
+	klineLimitConfig   = defaultKlineLimits
+)
+
+// SetKlineLimitConfig 更新K线获取数量（自动夹在默认与上限之间）
+func SetKlineLimitConfig(cfg KlineLimitConfig) {
+	klineLimitConfig = KlineLimitConfig{
+		Limit15m: clampKlineLimit(cfg.Limit15m, defaultKlineLimits.Limit15m, maxKlineLimits.Limit15m),
+		Limit1h:  clampKlineLimit(cfg.Limit1h, defaultKlineLimits.Limit1h, maxKlineLimits.Limit1h),
+		Limit4h:  clampKlineLimit(cfg.Limit4h, defaultKlineLimits.Limit4h, maxKlineLimits.Limit4h),
+		Limit1d:  clampKlineLimit(cfg.Limit1d, defaultKlineLimits.Limit1d, maxKlineLimits.Limit1d),
+	}
+}
+
+// GetKlineLimitConfig 返回当前生效的K线数量配置
+func GetKlineLimitConfig() KlineLimitConfig {
+	return klineLimitConfig
+}
+
+// GetKlineLimitMax 返回K线数量上限（用于前端提示）
+func GetKlineLimitMax() KlineLimitConfig {
+	return maxKlineLimits
+}
+
+func clampKlineLimit(val, def, max int) int {
+	if val <= 0 {
+		return def
+	}
+	if val > max {
+		return max
+	}
+	return val
+}
+
+func getKlineLimitForInterval(interval string) int {
+	switch interval {
+	case "15m":
+		return klineLimitConfig.Limit15m
+	case "1h":
+		return klineLimitConfig.Limit1h
+	case "4h":
+		return klineLimitConfig.Limit4h
+	case "1d":
+		return klineLimitConfig.Limit1d
+	default:
+		return 50
+	}
+}
+
 // ==================== 新增：斐波那契和市场结构相关结构 ====================
 // 注意：类型定义已移至 market/types.go，此处仅保留函数实现
 
@@ -433,28 +492,28 @@ func getMultiTimeframeData(symbol string) (*MultiTimeframeData, error) {
 	data := &MultiTimeframeData{}
 
 	// 获取15分钟数据 (主要交易框架)
-	klines15m, err := getKlines(symbol, "15m", 40)
+	klines15m, err := getKlines(symbol, "15m", getKlineLimitForInterval("15m"))
 	if err != nil {
 		return nil, fmt.Errorf("获取15分钟K线失败: %v", err)
 	}
 	data.Timeframe15m = calculateTimeframeData(klines15m, "15m")
 
 	// 获取1小时数据 (趋势确认)
-	klines1h, err := getKlines(symbol, "1h", 50)
+	klines1h, err := getKlines(symbol, "1h", getKlineLimitForInterval("1h"))
 	if err != nil {
 		return nil, fmt.Errorf("获取1小时K线失败: %v", err)
 	}
 	data.Timeframe1h = calculateTimeframeData(klines1h, "1h")
 
 	// 获取4小时数据 (大方向判断)
-	klines4h, err := getKlines(symbol, "4h", 60)
+	klines4h, err := getKlines(symbol, "4h", getKlineLimitForInterval("4h"))
 	if err != nil {
 		return nil, fmt.Errorf("获取4小时K线失败: %v", err)
 	}
 	data.Timeframe4h = calculateTimeframeData(klines4h, "4h")
 
 	// 获取日线数据 (长期趋势)
-	klines1d, err := getKlines(symbol, "1d", 90) // 获取90天日线数据
+	klines1d, err := getKlines(symbol, "1d", getKlineLimitForInterval("1d")) // 可配置的日线数量
 	if err != nil {
 		return nil, fmt.Errorf("获取日线K线失败: %v", err)
 	}
@@ -473,8 +532,15 @@ func calculateTimeframeData(klines []Kline, timeframe string) *TimeframeData {
 
 	// 提取价格序列
 	priceSeries := make([]float64, len(klines))
+	ohlcSeries := make([]OHLC, len(klines))
 	for i, k := range klines {
 		priceSeries[i] = k.Close
+		ohlcSeries[i] = OHLC{
+			Open:  k.Open,
+			High:  k.High,
+			Low:   k.Low,
+			Close: k.Close,
+		}
 	}
 
 	// 计算技术指标
@@ -516,6 +582,7 @@ func calculateTimeframeData(klines []Kline, timeframe string) *TimeframeData {
 		ATR14:           atr14,
 		Volume:          volume,
 		PriceSeries:     priceSeries,
+		OhlcSeries:      ohlcSeries,
 		TrendDirection:  trendDirection,
 		SignalStrength:  signalStrength,
 		Patterns:        patterns,        // 新增：形态识别结果

@@ -39,6 +39,10 @@ type ConfigFile struct {
 	Leverage           LeverageConfig `json:"leverage"`
 	JWTSecret          string         `json:"jwt_secret"`
 	DataKLineTime      string         `json:"data_k_line_time"`
+	KlineLimit15m      int            `json:"kline_limit_15m"`
+	KlineLimit1h       int            `json:"kline_limit_1h"`
+	KlineLimit4h       int            `json:"kline_limit_4h"`
+	KlineLimit1d       int            `json:"kline_limit_1d"`
 }
 
 // syncConfigToDatabase 从config.json读取配置并同步到数据库
@@ -75,6 +79,20 @@ func syncConfigToDatabase(database *config.Database) error {
 		"max_daily_loss":       fmt.Sprintf("%.1f", configFile.MaxDailyLoss),
 		"max_drawdown":         fmt.Sprintf("%.1f", configFile.MaxDrawdown),
 		"stop_trading_minutes": strconv.Itoa(configFile.StopTradingMinutes),
+	}
+
+	// 同步K线数量配置（可选）
+	if configFile.KlineLimit15m > 0 {
+		configs["kline_limit_15m"] = strconv.Itoa(configFile.KlineLimit15m)
+	}
+	if configFile.KlineLimit1h > 0 {
+		configs["kline_limit_1h"] = strconv.Itoa(configFile.KlineLimit1h)
+	}
+	if configFile.KlineLimit4h > 0 {
+		configs["kline_limit_4h"] = strconv.Itoa(configFile.KlineLimit4h)
+	}
+	if configFile.KlineLimit1d > 0 {
+		configs["kline_limit_1d"] = strconv.Itoa(configFile.KlineLimit1d)
 	}
 
 	// 同步default_coins（转换为JSON字符串存储）
@@ -243,6 +261,29 @@ func main() {
 		pool.SetOITopAPI(oiTopAPIURL)
 		log.Printf("✓ 已配置OI Top API")
 	}
+
+	// 读取并设置K线数量配置（按时间框架）
+	parseKlineLimit := func(key string, def int) int {
+		valStr, _ := database.GetSystemConfig(key)
+		if val, err := strconv.Atoi(valStr); err == nil && val > 0 {
+			return val
+		}
+		return def
+	}
+
+	klineLimits := market.GetKlineLimitConfig()
+	klineLimits.Limit15m = parseKlineLimit("kline_limit_15m", klineLimits.Limit15m)
+	klineLimits.Limit1h = parseKlineLimit("kline_limit_1h", klineLimits.Limit1h)
+	klineLimits.Limit4h = parseKlineLimit("kline_limit_4h", klineLimits.Limit4h)
+	klineLimits.Limit1d = parseKlineLimit("kline_limit_1d", klineLimits.Limit1d)
+	market.SetKlineLimitConfig(klineLimits)
+
+	maxKlineLimits := market.GetKlineLimitMax()
+	log.Printf("✓ K线数量: 15m=%d(<=%d) | 1h=%d(<=%d) | 4h=%d(<=%d) | 1d=%d(<=%d)",
+		klineLimits.Limit15m, maxKlineLimits.Limit15m,
+		klineLimits.Limit1h, maxKlineLimits.Limit1h,
+		klineLimits.Limit4h, maxKlineLimits.Limit4h,
+		klineLimits.Limit1d, maxKlineLimits.Limit1d)
 
 	// 创建TraderManager
 	traderManager := manager.NewTraderManager()

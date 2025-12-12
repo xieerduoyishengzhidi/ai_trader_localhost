@@ -621,6 +621,9 @@ func buildPromptDataConfig(fieldSet map[string]bool) (*market.PromptDataConfig, 
 	if fieldSet["longer_term"] {
 		addCat("longer_term")
 	}
+	if fieldSet["ohlc_series_json"] {
+		addCat("price_series")
+	}
 
 	cfg := &market.PromptDataConfig{
 		PromptName:       "dynamic",

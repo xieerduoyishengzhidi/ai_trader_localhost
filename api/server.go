@@ -8,6 +8,7 @@ import (
 	"nofx/auth"
 	"nofx/config"
 	"nofx/decision"
+	"nofx/market"
 	"nofx/manager"
 	"nofx/news"
 	"os"
@@ -136,6 +137,9 @@ func (s *Server) setupRoutes() {
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
 			protected.GET("/statistics", s.handleStatistics)
 			protected.GET("/performance", s.handlePerformance)
+
+			// 系统配置：K线数量
+			protected.PUT("/config/kline-limits", s.handleUpdateKlineLimits)
 		}
 	}
 }
@@ -145,6 +149,63 @@ func (s *Server) handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
 		"time":   c.Request.Context().Value("time"),
+	})
+}
+
+// handleUpdateKlineLimits 更新各时间框架的K线数量配置（需要认证）
+func (s *Server) handleUpdateKlineLimits(c *gin.Context) {
+	var payload struct {
+		Limit15m *int `json:"limit_15m"`
+		Limit1h  *int `json:"limit_1h"`
+		Limit4h  *int `json:"limit_4h"`
+		Limit1d  *int `json:"limit_1d"`
+	}
+
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload"})
+		return
+	}
+
+	current := market.GetKlineLimitConfig()
+	maxCfg := market.GetKlineLimitMax()
+
+	apply := func(v *int, fallback int) int {
+		if v == nil {
+			return fallback
+		}
+		return *v
+	}
+
+	newCfg := market.KlineLimitConfig{
+		Limit15m: apply(payload.Limit15m, current.Limit15m),
+		Limit1h:  apply(payload.Limit1h, current.Limit1h),
+		Limit4h:  apply(payload.Limit4h, current.Limit4h),
+		Limit1d:  apply(payload.Limit1d, current.Limit1d),
+	}
+
+	// 即时生效（内部带夹限）
+	market.SetKlineLimitConfig(newCfg)
+	effective := market.GetKlineLimitConfig()
+
+	// 持久化到system_config
+	_ = s.database.SetSystemConfig("kline_limit_15m", fmt.Sprintf("%d", effective.Limit15m))
+	_ = s.database.SetSystemConfig("kline_limit_1h", fmt.Sprintf("%d", effective.Limit1h))
+	_ = s.database.SetSystemConfig("kline_limit_4h", fmt.Sprintf("%d", effective.Limit4h))
+	_ = s.database.SetSystemConfig("kline_limit_1d", fmt.Sprintf("%d", effective.Limit1d))
+
+	c.JSON(http.StatusOK, gin.H{
+		"kline_limits": gin.H{
+			"limit_15m": effective.Limit15m,
+			"limit_1h":  effective.Limit1h,
+			"limit_4h":  effective.Limit4h,
+			"limit_1d":  effective.Limit1d,
+		},
+		"kline_limits_max": gin.H{
+			"limit_15m": maxCfg.Limit15m,
+			"limit_1h":  maxCfg.Limit1h,
+			"limit_4h":  maxCfg.Limit4h,
+			"limit_1d":  maxCfg.Limit1d,
+		},
 	})
 }
 
@@ -179,12 +240,27 @@ func (s *Server) handleGetSystemConfig(c *gin.Context) {
 	betaModeStr, _ := s.database.GetSystemConfig("beta_mode")
 	betaMode := betaModeStr == "true"
 
+	klineLimits := market.GetKlineLimitConfig()
+	klineLimitMax := market.GetKlineLimitMax()
+
 	c.JSON(http.StatusOK, gin.H{
 		"admin_mode":       auth.IsAdminMode(),
 		"beta_mode":        betaMode,
 		"default_coins":    defaultCoins,
 		"btc_eth_leverage": btcEthLeverage,
 		"altcoin_leverage": altcoinLeverage,
+		"kline_limits": gin.H{
+			"limit_15m": klineLimits.Limit15m,
+			"limit_1h":  klineLimits.Limit1h,
+			"limit_4h":  klineLimits.Limit4h,
+			"limit_1d":  klineLimits.Limit1d,
+		},
+		"kline_limits_max": gin.H{
+			"limit_15m": klineLimitMax.Limit15m,
+			"limit_1h":  klineLimitMax.Limit1h,
+			"limit_4h":  klineLimitMax.Limit4h,
+			"limit_1d":  klineLimitMax.Limit1d,
+		},
 	})
 }
 

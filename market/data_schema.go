@@ -1,6 +1,7 @@
 package market
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -67,6 +68,15 @@ func GetDefaultDataSchema() *DataSchema {
 				Name:        "多时间框架",
 				Description: "15m、1h、4h、1d各时间框架的趋势、信号强度、技术指标",
 				Fields:      []string{"MultiTimeframe"},
+				Required:    false,
+				Timeframes:  []string{"15m", "1h", "4h", "1d"},
+			},
+			// 3.1 OHLC 序列（机器可读）
+			{
+				ID:          "price_series",
+				Name:        "多周期OHLC序列",
+				Description: "按时间框架输出精简OHLC数组（o/h/l/c），用于模型直接计算",
+				Fields:      []string{"OhlcSeries"},
 				Required:    false,
 				Timeframes:  []string{"15m", "1h", "4h", "1d"},
 			},
@@ -187,6 +197,9 @@ func GetDefaultDataSchema() *DataSchema {
 
 			// 市场结构
 			"MarketStructure": "市场结构对象，包含：波段高点数组、波段低点数组、当前偏向（bullish/bearish/neutral）、斐波那契水平。每个时间框架（15m/1h/4h/1d）都有独立的市场结构，Data.MarketStructure为日线结构（向后兼容）",
+
+			// OHLC 序列
+			"OhlcSeries": "按时间框架输出的精简OHLC数组（字段 o/h/l/c），来自已有K线抓取，可用于模型自算指标",
 
 			// 斐波那契
 			"FibLevels": "斐波那契水平对象，包含：0.236/0.382/0.5/0.618/0.705/0.786水平、波段高点/低点、趋势方向",
@@ -358,6 +371,11 @@ func FilterDataBySchema(data *Data, config *PromptDataConfig, schema *DataSchema
 	if fieldSet["MultiTimeframe"] {
 		result["multi_timeframe"] = data.MultiTimeframe
 	}
+	if fieldSet["OhlcSeries"] {
+		if ohlc := extractOHLCSeries(data); len(ohlc) > 0 {
+			result["ohlc_series"] = ohlc
+		}
+	}
 	if fieldSet["OpenInterest"] {
 		result["open_interest"] = data.OpenInterest
 	}
@@ -395,6 +413,33 @@ func FilterDataBySchema(data *Data, config *PromptDataConfig, schema *DataSchema
 	}
 
 	return result
+}
+
+// extractOHLCSeries 提取多时间框架的精简OHLC序列
+func extractOHLCSeries(data *Data) map[string][]OHLC {
+	if data == nil || data.MultiTimeframe == nil {
+		return nil
+	}
+
+	series := make(map[string][]OHLC)
+
+	if tf := data.MultiTimeframe.Timeframe15m; tf != nil && len(tf.OhlcSeries) > 0 {
+		series["15m"] = tf.OhlcSeries
+	}
+	if tf := data.MultiTimeframe.Timeframe1h; tf != nil && len(tf.OhlcSeries) > 0 {
+		series["1h"] = tf.OhlcSeries
+	}
+	if tf := data.MultiTimeframe.Timeframe4h; tf != nil && len(tf.OhlcSeries) > 0 {
+		series["4h"] = tf.OhlcSeries
+	}
+	if tf := data.MultiTimeframe.Timeframe1d; tf != nil && len(tf.OhlcSeries) > 0 {
+		series["1d"] = tf.OhlcSeries
+	}
+
+	if len(series) == 0 {
+		return nil
+	}
+	return series
 }
 
 // FormatDataByConfig 根据配置格式化市场数据为字符串
@@ -575,6 +620,16 @@ func FormatDataByConfig(data *Data, config *PromptDataConfig, schema *DataSchema
 	if condition, ok := filteredData["market_condition"].(*MarketCondition); ok && condition != nil {
 		sb.WriteString(fmt.Sprintf("🌊 市场状态: %s (置信度: %d%%, trending=趋势市可交易, ranging=震荡市避免开仓, volatile=波动市谨慎)\n",
 			condition.Condition, condition.Confidence))
+	}
+
+	// 多时间框架OHLC序列（机器可读，精简版）
+	if ohlc, ok := filteredData["ohlc_series"].(map[string][]OHLC); ok && len(ohlc) > 0 {
+		if bytes, err := json.Marshal(ohlc); err == nil {
+			sb.WriteString("📈 OHLC序列(JSON, 精简 o/h/l/c):\n")
+			sb.WriteString("```json\n")
+			sb.Write(bytes)
+			sb.WriteString("\n```\n")
+		}
 	}
 
 	// 持仓量数据

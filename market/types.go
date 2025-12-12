@@ -106,10 +106,19 @@ type TimeframeData struct {
 	ATR14          float64
 	Volume         float64
 	PriceSeries    []float64
+	OhlcSeries     []OHLC
 	TrendDirection string              // "bullish", "bearish", "neutral"
 	SignalStrength int                 // 0-100
 	Patterns       []CandlestickPattern `json:"patterns,omitempty"` // 新增：形态识别结果
 	MarketStructure *MarketStructure   `json:"market_structure,omitempty"` // 新增：该时间框架的市场结构
+}
+
+// OHLC 精简K线结构（用于Prompt输出，复用已抓取数据，不含时间戳以节省token）
+type OHLC struct {
+	Open  float64 `json:"o"`
+	High  float64 `json:"h"`
+	Low   float64 `json:"l"`
+	Close float64 `json:"c"`
 }
 
 // CandlestickPattern 单个形态识别结果
