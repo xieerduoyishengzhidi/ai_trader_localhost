@@ -22,6 +22,7 @@ import requests
 BASE_FRED = "https://api.stlouisfed.org/fred/series/observations"
 FRED_API_KEY = None  # 可选：填入 FRED API KEY，提高稳定性
 HISTORY_DB = Path(__file__).resolve().parent / "history" / "history.sqlite3"
+NEWS_DB = Path(__file__).resolve().parent.parent / "filter" / "pentosh1.db"
 
 
 def fetch_stablecoins_history() -> List[Dict[str, Any]]:
@@ -186,6 +187,34 @@ def _ensure_db() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_news_column(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(pentosh1_news)")
+    cols = [c[1] for c in cur.fetchall()]
+    if "macro" not in cols:
+        cur.execute("ALTER TABLE pentosh1_news ADD COLUMN macro TEXT")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_macro ON pentosh1_news(macro)")
+        conn.commit()
+
+
+def _load_history_map() -> Dict[date, str]:
+    if not HISTORY_DB.exists():
+        raise FileNotFoundError(f"历史库不存在: {HISTORY_DB}")
+    conn = sqlite3.connect(str(HISTORY_DB))
+    cur = conn.cursor()
+    cur.execute("SELECT date, payload FROM daily_context")
+    rows = cur.fetchall()
+    conn.close()
+    history: Dict[date, str] = {}
+    for d, p in rows:
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        history[dt] = p
+    return history
+
+
 def _build_payload(
     date_cursor: date,
     walcl_map: Dict[date, float],
@@ -229,16 +258,11 @@ def _build_payload(
         },
         "layer2": {
             "stablecoin_mcap_b": stable_today,
-            "stablecoin_growth_30d_pct": stable_growth_30d,
-            "_fill": "fetch_history_sources",
-        },
-        "layer3": {
-            "_fill": "fetch_history_sources",
+            "stablecoin_growth_30d_pct": stable_growth_30d
         },
         "layer4": {
             "funding_rate_annualized_pct": funding_annualized,
             "fear_greed_index": fg_index,
-            "_fill": "fetch_history_sources",
         },
     }
 
@@ -258,6 +282,39 @@ def _summary(name: str, rows: List[Dict[str, Any]]):
     print(f"[{name}] 共 {len(rows_sorted)} 条 | 起止: {rows_sorted[0]['date']} -> {rows_sorted[-1]['date']}")
     print("  示例前2:", rows_sorted[:2])
     print("  示例后2:", rows_sorted[-2:])
+
+
+def backfill_news():
+    """模仿 backfill_macro：清空旧 macro，再按 publish_time 日期回填当日 payload。"""
+    if not NEWS_DB.exists():
+        raise FileNotFoundError(f"新闻库不存在: {NEWS_DB}")
+    history_map = _load_history_map()
+    if not history_map:
+        raise RuntimeError("历史库无可用数据")
+
+    conn = sqlite3.connect(str(NEWS_DB))
+    _ensure_news_column(conn)
+    cur = conn.cursor()
+    cur.execute("UPDATE pentosh1_news SET macro = NULL")
+
+    cur.execute("SELECT index_id, publish_time FROM pentosh1_news")
+    rows = cur.fetchall()
+    updated = 0
+    for idx, pub_time in rows:
+        if not pub_time:
+            continue
+        try:
+            dt = datetime.fromisoformat(pub_time).date()
+        except Exception:
+            continue
+        payload = history_map.get(dt)
+        if payload:
+            cur.execute("UPDATE pentosh1_news SET macro = ? WHERE index_id = ?", (payload, idx))
+            updated += 1
+
+    conn.commit()
+    conn.close()
+    print(f"[backfill] pentosh1_news 已重填 macro，更新 {updated} 条")
 
 
 def main():
@@ -321,6 +378,8 @@ def main():
     conn.commit()
     conn.close()
     print(f"[history.sqlite3] 已写入 {inserted} 条记录 -> {HISTORY_DB}")
+    # 回填 pentosh1.db
+    backfill_news()
 
 
 if __name__ == "__main__":
