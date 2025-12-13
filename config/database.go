@@ -205,26 +205,6 @@ func (d *Database) createTables() error {
 			FOREIGN KEY (decision_action_id) REFERENCES trader_decision_actions(id) ON DELETE CASCADE
 		)`,
 
-		// 为决策日志表创建索引
-		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_trader_id ON trader_decision_logs(trader_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_timestamp ON trader_decision_logs(timestamp)`,
-		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_trader_timestamp ON trader_decision_logs(trader_id, timestamp)`,
-		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_log_id ON trader_decision_actions(decision_log_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_order_id ON trader_decision_actions(order_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_open_action_id ON trader_decision_actions(open_action_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_position_id ON trader_decision_actions(position_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_trader_trade_details_action_id ON trader_trade_details(decision_action_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_trader_trade_details_trade_id ON trader_trade_details(trade_id)`,
-
-		// 兼容旧库：为 trader_decision_actions 增加新列
-		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS open_action_id INTEGER`,
-		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS position_id TEXT`,
-		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS closed BOOLEAN DEFAULT 0`,
-		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS close_time DATETIME`,
-		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS pnl REAL`,
-		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS pnl_ratio REAL`,
-		`ALTER TABLE trader_decision_actions ADD COLUMN IF NOT EXISTS fee REAL`,
-
 		// 触发器：自动更新 updated_at
 		`CREATE TRIGGER IF NOT EXISTS update_users_updated_at
 			AFTER UPDATE ON users
@@ -281,6 +261,30 @@ func (d *Database) createTables() error {
 		}
 	}
 
+	// 兼容旧库：补齐 trader_decision_actions 新增列
+	if err := d.ensureTraderDecisionActionColumns(); err != nil {
+		return err
+	}
+
+	// 为决策日志相关表创建索引
+	indexQueries := []string{
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_trader_id ON trader_decision_logs(trader_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_timestamp ON trader_decision_logs(timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_logs_trader_timestamp ON trader_decision_logs(trader_id, timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_log_id ON trader_decision_actions(decision_log_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_order_id ON trader_decision_actions(order_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_open_action_id ON trader_decision_actions(open_action_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_decision_actions_position_id ON trader_decision_actions(position_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_trade_details_action_id ON trader_trade_details(decision_action_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_trader_trade_details_trade_id ON trader_trade_details(trade_id)`,
+	}
+
+	for _, query := range indexQueries {
+		if _, err := d.db.Exec(query); err != nil {
+			return fmt.Errorf("执行SQL失败 [%s]: %w", query, err)
+		}
+	}
+
 	// 为现有数据库添加新字段（向后兼容）
 	alterQueries := []string{
 		`ALTER TABLE exchanges ADD COLUMN hyperliquid_wallet_addr TEXT DEFAULT ''`,
@@ -316,6 +320,11 @@ func (d *Database) createTables() error {
 		d.db.Exec(query)
 	}
 
+	// 补齐 trader_decision_actions 的新增列（执行在通用 alter 之后，确保索引创建不因缺列失败）
+	if err := d.ensureTraderDecisionActionColumns(); err != nil {
+		log.Printf("⚠️  补齐 trader_decision_actions 新增列失败: %v", err)
+	}
+
 	// 检查是否需要迁移exchanges表的主键结构
 	err := d.migrateExchangesTable()
 	if err != nil {
@@ -323,6 +332,64 @@ func (d *Database) createTables() error {
 	}
 
 	return nil
+}
+
+// ensureTraderDecisionActionColumns 确保 trader_decision_actions 新增列存在（兼容旧库）
+func (d *Database) ensureTraderDecisionActionColumns() error {
+	type columnDef struct {
+		name string
+		def  string
+	}
+
+	columns := []columnDef{
+		{"open_action_id", "open_action_id INTEGER"},
+		{"position_id", "position_id TEXT"},
+		{"closed", "closed BOOLEAN DEFAULT 0"},
+		{"close_time", "close_time DATETIME"},
+		{"pnl", "pnl REAL"},
+		{"pnl_ratio", "pnl_ratio REAL"},
+		{"fee", "fee REAL"},
+	}
+
+	for _, col := range columns {
+		exists, err := d.columnExists("trader_decision_actions", col.name)
+		if err != nil {
+			return fmt.Errorf("检查列是否存在失败: %w", err)
+		}
+		if exists {
+			continue
+		}
+
+		if _, err := d.db.Exec(fmt.Sprintf("ALTER TABLE trader_decision_actions ADD COLUMN %s", col.def)); err != nil {
+			return fmt.Errorf("为 trader_decision_actions 添加列 %s 失败: %w", col.name, err)
+		}
+	}
+
+	return nil
+}
+
+func (d *Database) columnExists(table, column string) (bool, error) {
+	rows, err := d.db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(name, column) {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // initDefaultData 初始化默认数据
