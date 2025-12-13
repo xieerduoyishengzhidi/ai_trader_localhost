@@ -5,6 +5,7 @@
 - 稳定币总市值：DeFi Llama (stablecoincharts/all)
 - 币安合约资金费率：fapi/v1/fundingRate（支持分页）
 - FRED 宏观序列：WALCL / WTREGEN / RRPONTSYD
+- 恐慌贪婪指数：alternative.me/fng
 
 输出：layer1/2/3/4 payload，用于 backfill_macro 回填。
 """
@@ -104,6 +105,29 @@ def fetch_fred_series(series_id: str, start: str, end: str) -> List[Dict[str, An
     return out
 
 
+def fetch_fg_history(limit: int = 500) -> List[Dict[str, Any]]:
+    """恐慌贪婪指数历史（alternative.me）。"""
+    url = f"https://api.alternative.me/fng/?limit={limit}"
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        rows = []
+        for item in data:
+            ts = item.get("timestamp")
+            val = item.get("value")
+            if ts is None or val is None:
+                continue
+            try:
+                dt = datetime.utcfromtimestamp(int(ts)).date()
+                rows.append({"date": dt.isoformat(), "fg_index": int(val)})
+            except Exception:
+                continue
+        return rows
+    except Exception:
+        return []
+
+
 def _list_to_map(
     rows: List[Dict[str, Any]],
     value_key: str,
@@ -169,6 +193,7 @@ def _build_payload(
     rrp_map: Dict[date, float],
     stable_map: Dict[date, float],
     funding_map: Dict[date, float],
+    fg_map: Dict[date, float],
 ) -> Dict[str, Any]:
     walcl_val = _value_on_or_before(walcl_map, date_cursor)
     tga_val = _value_on_or_before(tga_map, date_cursor)
@@ -189,6 +214,7 @@ def _build_payload(
     stable_growth_30d = _pct_change(stable_map, date_cursor, 30)
 
     funding_annualized = _value_on_or_before(funding_map, date_cursor)
+    fg_index = _value_on_or_before(fg_map, date_cursor)
 
     payload = {
         "date": date_cursor.isoformat(),
@@ -211,6 +237,7 @@ def _build_payload(
         },
         "layer4": {
             "funding_rate_annualized_pct": funding_annualized,
+            "fear_greed_index": fg_index,
             "_fill": "fetch_history_sources",
         },
     }
@@ -246,6 +273,8 @@ def main():
     # 2) 币安资金费率
     funding = fetch_binance_funding(symbol="BTCUSDT", days=365)
     _summary("binance_funding_BTCUSDT", funding)
+    fg_rows = fetch_fg_history(limit=500)
+    _summary("fear_greed", fg_rows)
 
     # 3) FRED 序列
     walcl_rows = fetch_fred_series("WALCL", start, end)
@@ -263,6 +292,7 @@ def main():
     funding_map = _list_to_map(
         funding, "funding_rate", lambda v: float(v) * 3 * 365 * 100  # 8 小时一次，年化百分比
     )
+    fg_map = _list_to_map(fg_rows, "fg_index")
 
     all_dates = sorted(
         {
@@ -271,6 +301,7 @@ def main():
             *rrp_map.keys(),
             *stable_map.keys(),
             *funding_map.keys(),
+            *fg_map.keys(),
         }
     )
     conn = _ensure_db()
@@ -280,7 +311,7 @@ def main():
     for current in all_dates:
         if current < start_date or current > end_date:
             continue
-        payload = _build_payload(current, walcl_map, tga_map, rrp_map, stable_map, funding_map)
+        payload = _build_payload(current, walcl_map, tga_map, rrp_map, stable_map, funding_map, fg_map)
         conn.execute(
             "INSERT OR REPLACE INTO daily_context (date, payload, created_at) VALUES (?, ?, ?)",
             (current.isoformat(), json.dumps(payload, ensure_ascii=False), datetime.utcnow().isoformat()),
