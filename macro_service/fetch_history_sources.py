@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-快速拉取过去一年的关键历史数据，用于校验数据源结构：
+快速拉取过去一年的关键历史数据并写入 history.sqlite3（daily_context）：
 - 稳定币总市值：DeFi Llama (stablecoincharts/all)
 - 币安合约资金费率：fapi/v1/fundingRate（支持分页）
 - FRED 宏观序列：WALCL / WTREGEN / RRPONTSYD
 
-仅做拉取与样本输出，不入库；便于检查字段与日期范围是否符合预期。
+输出：layer1/2/3/4 payload，用于 backfill_macro 回填。
 """
 
 import json
@@ -193,6 +193,9 @@ def _build_payload(
     payload = {
         "date": date_cursor.isoformat(),
         "layer1": {
+            "walcl": walcl_val,
+            "tga": tga_val,
+            "rrp": rrp_val,
             "liquidity_billions": round(liquidity_today / 1000, 2) if liquidity_today is not None else None,
             "liquidity_change_30d_b": round((liquidity_today - liquidity_prev) / 1000, 2)
             if liquidity_today is not None and liquidity_prev is not None
