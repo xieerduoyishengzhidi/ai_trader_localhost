@@ -19,6 +19,7 @@ const PROMPT_OPTIONS: { id: string; label: string }[] = [
   { id: 'basic_price', label: '基础价格' },
   { id: 'indicators', label: '技术指标' },
   { id: 'multiframe', label: '多周期快照' },
+  { id: 'ohlc_series_json', label: '多周期OHLC序列' },
   { id: 'recent_move', label: '近期价格变动' },
   { id: 'positions_block', label: '当前持仓' },
   { id: 'candidates_block', label: '候选币行情' },
