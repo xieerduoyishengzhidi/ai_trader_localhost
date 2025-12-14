@@ -3,10 +3,18 @@ import type { AIModel, Exchange, CreateTraderRequest } from '../types'
 import { useLanguage } from '../contexts/LanguageContext'
 import { t } from '../i18n/translations'
 
+interface KlineLimitConfig {
+  limit_15m: number
+  limit_1h: number
+  limit_4h: number
+  limit_1d: number
+}
+
 const DEFAULT_PROMPT_FIELDS = [
   'basic_price',
   'indicators',
   'multiframe',
+  'ohlc_series_json',
   'recent_move',
   'positions_block',
   'candidates_block',
@@ -106,6 +114,19 @@ export function TraderConfigModal({
   const [selectedCoins, setSelectedCoins] = useState<string[]>([])
   const [showCoinSelector, setShowCoinSelector] = useState(false)
   const [promptTemplates, setPromptTemplates] = useState<{ name: string }[]>([])
+  const [klineLimits, setKlineLimits] = useState<KlineLimitConfig>({
+    limit_15m: 40,
+    limit_1h: 50,
+    limit_4h: 60,
+    limit_1d: 90,
+  })
+  const [klineLimitMax, setKlineLimitMax] = useState<KlineLimitConfig>({
+    limit_15m: 500,
+    limit_1h: 500,
+    limit_4h: 500,
+    limit_1d: 500,
+  })
+  const [isUpdatingKlines, setIsUpdatingKlines] = useState(false)
 
   useEffect(() => {
     if (traderData) {
@@ -163,6 +184,22 @@ export function TraderConfigModal({
         if (config.default_coins) {
           setAvailableCoins(config.default_coins)
         }
+        if (config.kline_limits) {
+          setKlineLimits({
+            limit_15m: config.kline_limits.limit_15m ?? 40,
+            limit_1h: config.kline_limits.limit_1h ?? 50,
+            limit_4h: config.kline_limits.limit_4h ?? 60,
+            limit_1d: config.kline_limits.limit_1d ?? 90,
+          })
+        }
+        if (config.kline_limits_max) {
+          setKlineLimitMax({
+            limit_15m: config.kline_limits_max.limit_15m ?? 500,
+            limit_1h: config.kline_limits_max.limit_1h ?? 500,
+            limit_4h: config.kline_limits_max.limit_4h ?? 500,
+            limit_1d: config.kline_limits_max.limit_1d ?? 500,
+          })
+        }
       } catch (error) {
         console.error('Failed to fetch config:', error)
         // 使用默认币种列表
@@ -205,6 +242,45 @@ export function TraderConfigModal({
   }, [selectedCoins])
 
   if (!isOpen) return null
+
+  const handleKlineLimitChange = (key: keyof KlineLimitConfig, value: number) => {
+    setKlineLimits((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const handleSaveKlineLimits = async () => {
+    setIsUpdatingKlines(true)
+    try {
+      const response = await fetch('/api/config/kline-limits', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(klineLimits),
+      })
+      if (!response.ok) {
+        throw new Error('更新K线数量失败')
+      }
+      const data = await response.json()
+      if (data?.kline_limits) {
+        setKlineLimits({
+          limit_15m: data.kline_limits.limit_15m,
+          limit_1h: data.kline_limits.limit_1h,
+          limit_4h: data.kline_limits.limit_4h,
+          limit_1d: data.kline_limits.limit_1d,
+        })
+      }
+      if (data?.kline_limits_max) {
+        setKlineLimitMax({
+          limit_15m: data.kline_limits_max.limit_15m,
+          limit_1h: data.kline_limits_max.limit_1h,
+          limit_4h: data.kline_limits_max.limit_4h,
+          limit_1d: data.kline_limits_max.limit_1d,
+        })
+      }
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setIsUpdatingKlines(false)
+    }
+  }
 
   const handleInputChange = (field: keyof TraderConfigData, value: any) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
@@ -540,6 +616,54 @@ export function TraderConfigModal({
                   </div>
                 )}
               </div>
+            </div>
+          </div>
+
+          {/* Kline Limits */}
+          <div className="bg-[#0B0E11] border border-[#2B3139] rounded-lg p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-[#EAECEF] flex items-center gap-2">
+                📈 K线数量配置
+              </h3>
+              <span className="text-xs text-[#848E9C]">
+                上限: 15m {klineLimitMax.limit_15m} / 1h {klineLimitMax.limit_1h} / 4h {klineLimitMax.limit_4h} / 1d {klineLimitMax.limit_1d}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {([
+                { key: 'limit_15m', label: '15m K线数' },
+                { key: 'limit_1h', label: '1h K线数' },
+                { key: 'limit_4h', label: '4h K线数' },
+                { key: 'limit_1d', label: '1d K线数' },
+              ] as { key: keyof KlineLimitConfig; label: string }[]).map((item) => (
+                <div key={item.key} className="flex flex-col gap-2">
+                  <label className="text-sm text-[#EAECEF]">{item.label}</label>
+                  <input
+                    type="number"
+                    min={10}
+                    max={klineLimitMax[item.key]}
+                    value={klineLimits[item.key]}
+                    onChange={(e) =>
+                      handleKlineLimitChange(item.key, Number(e.target.value))
+                    }
+                    className="w-full px-3 py-2 bg-[#0B0E11] border border-[#2B3139] rounded text-[#EAECEF] focus:border-[#F0B90B] focus:outline-none"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end mt-4">
+              <button
+                type="button"
+                onClick={handleSaveKlineLimits}
+                disabled={isUpdatingKlines}
+                className={`px-4 py-2 rounded text-sm font-semibold ${
+                  isUpdatingKlines
+                    ? 'bg-[#2B3139] text-[#848E9C]'
+                    : 'bg-[#F0B90B] text-black hover:bg-[#E1A706]'
+                } transition-colors`}
+              >
+                {isUpdatingKlines ? '保存中...' : '保存K线数量'}
+              </button>
             </div>
           </div>
 
