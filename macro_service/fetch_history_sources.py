@@ -56,12 +56,8 @@ def fetch_binance_funding(symbol: str = "BTCUSDT", days: int = 365) -> List[Dict
     cursor = start_ts
     while cursor < end_ts:
         params = {"symbol": symbol, "startTime": cursor, "endTime": end_ts, "limit": 1000}
-        try:
-            resp = requests.get(url, params=params, timeout=15)
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            print(f"[binance_funding] 请求失败({symbol}): {exc}, 返回空列表以不中断流程")
-            return []
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
         arr = resp.json()
         if not arr:
             break

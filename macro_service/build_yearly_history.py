@@ -178,6 +178,7 @@ def _fetch_stablecoin_history() -> Dict[date, float]:
 
 
 def _fetch_cg_market_caps(coin_id: str, days: int = 400) -> Dict[date, float]:
+    """优先从 CoinGecko 获取市值历史，失败返回空字典。"""
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     params = {"vs_currency": "usd", "days": days}
     try:
@@ -192,6 +193,44 @@ def _fetch_cg_market_caps(coin_id: str, days: int = 400) -> Dict[date, float]:
     except Exception as exc:
         print(f"⚠️ 获取 {coin_id} 市值历史失败: {exc}")
         return {}
+
+
+def _fetch_alt_ticker(slug: str) -> Optional[Dict[str, float]]:
+    """从 alternative.me 获取单币行情（无历史，仅当前值）。"""
+    url = f"https://api.alternative.me/v2/ticker/{slug}/"
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json().get("data", {})
+        if not data:
+            return None
+        first = next(iter(data.values()))
+        quotes = first.get("quotes", {}).get("USD", {})
+        return {
+            "price": quotes.get("price"),
+            "market_cap": quotes.get("market_cap"),
+        }
+    except Exception as exc:
+        print(f"⚠️ 获取 alternative.me ticker 失败({slug}): {exc}")
+        return None
+
+
+def _fetch_alt_global() -> Optional[Dict[str, float]]:
+    """从 alternative.me 获取全市场快照（无历史，仅当前值）。"""
+    url = "https://api.alternative.me/v2/global/"
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        body = resp.json().get("data", {})
+        quotes_usd = body.get("quotes", {}).get("USD", {})
+        return {
+            "total_market_cap": quotes_usd.get("total_market_cap"),
+            "total_volume_24h": quotes_usd.get("total_volume_24h"),
+            "btc_dominance_pct": body.get("bitcoin_percentage_of_market_cap"),
+        }
+    except Exception as exc:
+        print(f"⚠️ 获取 alternative.me global 失败: {exc}")
+        return None
 
 
 def _fetch_binance_funding_history(symbol: str = "BTCUSDT", days: int = 400) -> Dict[date, float]:
@@ -283,6 +322,9 @@ def _build_payload(
     total_mcap_hist: Dict[date, float],
     funding_hist: Dict[date, float],
     fg_hist: Dict[date, int],
+    alt_snapshot: Optional[Dict[str, float]],
+    alt_btc: Optional[Dict[str, float]],
+    alt_eth: Optional[Dict[str, float]],
 ):
     dxy_today = _value_on_or_before(dxy_series, date_cursor)
     dxy_trend = _pct_change(dxy_series, date_cursor, 30)
@@ -331,6 +373,13 @@ def _build_payload(
     btc_mcap = _value_from_map_on_or_before(btc_mcap_hist, date_cursor)
     eth_mcap = _value_from_map_on_or_before(eth_mcap_hist, date_cursor)
     total_mcap = _value_from_map_on_or_before(total_mcap_hist, date_cursor)
+    # 兜底：如果历史为空且是当前日，用 alternative.me 快照补全
+    if total_mcap is None and alt_snapshot and date_cursor == datetime.utcnow().date():
+        total_mcap = alt_snapshot.get("total_market_cap")
+    if btc_mcap is None and alt_btc and date_cursor == datetime.utcnow().date():
+        btc_mcap = alt_btc.get("market_cap")
+    if eth_mcap is None and alt_eth and date_cursor == datetime.utcnow().date():
+        eth_mcap = alt_eth.get("market_cap")
     btc_dominance = None
     eth_dominance = None
     total3_cap_b = None
@@ -433,6 +482,10 @@ def main():
     total_mcap_hist = _fetch_cg_market_caps("global")  # 可能失败，失败则相关字段缺失
     funding_hist = _fetch_binance_funding_history("BTCUSDT")
     fg_hist = _fetch_fg_history()
+    # alternative.me 快照兜底（仅当前值）
+    alt_snapshot = _fetch_alt_global()
+    alt_btc = _fetch_alt_ticker("bitcoin")
+    alt_eth = _fetch_alt_ticker("ethereum")
 
     all_dates = sorted({dt for dt, _ in dxy} | {dt for dt, _ in walcl} | {dt for dt, _ in btc})
     conn = _ensure_db()
@@ -456,6 +509,9 @@ def main():
             total_mcap_hist,
             funding_hist,
             fg_hist,
+            alt_snapshot,
+            alt_btc,
+            alt_eth,
         )
         conn.execute(
             "INSERT OR REPLACE INTO daily_context (date, payload, created_at) VALUES (?, ?, ?)",

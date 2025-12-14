@@ -1,46 +1,202 @@
-# IDE 配置文件
-.idea/
-*.iml
-*.xml
+# ============================================
+# NOFX .gitignore - Privacy Protected
+# ============================================
 
-# AI 工具
-.claude/
+# ==================== SENSITIVE DATA ====================
 
-# 编译产物
-nofx-auto
-*.exe
-nofx
-nofx_test
-
-# Go 相关
-*.test
-*.out
-
-# 操作系统
-.DS_Store
-Thumbs.db
-
-# 临时文件
-*.log
-*.tmp
-*.bak
-*.backup
-
-# 环境变量
-.env
-config.json
+# Database files (contains API keys, user data, trading history)
+*.db
 config.db
+filter/pentosh1.db
+rag/logic_analysis.db
+news_service/history_news.db
 
-# 决策日志
+# Configuration with secrets
+config.json
+.env
+.env.*
+!.env.example
+
+# Telegram session files (contains login credentials)
+*.session
+telegram_session.session
+telegram_fetch/*.session
+
+# Beta/invite codes
+beta_codes.txt
+
+# ==================== TRADING DATA ====================
+
+# Decision logs (contains trading strategies and account info)
 decision_logs/
-coin_pool_cache/
-nofx_test
 
-# Node.js
-web/node_modules/
+# Exports (contains trading history and PnL)
+exports/
+
+# Coin pool cache
+coin_pool_cache/
+
+# Output files
+output/
+newborn_trading_logs_summary.txt
+
+# ==================== PYTHON ====================
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ==================== NODE.JS ====================
+
+# Dependencies
 node_modules/
+web/node_modules/
+
+# Build output
 web/dist/
 web/.vite/
 
-# ESLint 临时报告文件（调试时生成，不纳入版本控制）
+# Cache
+.npm/
+.eslintcache
+
+# ESLint temp reports
 eslint-*.json
+
+# ==================== GO ====================
+
+# Compiled binaries
+nofx
+nofx-auto
+nofx_test
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test files
+*.test
+*.out
+
+# Go workspace
+go.work
+
+# ==================== IDE ====================
+
+# JetBrains
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# AI tools
+.claude/
+.cursor/
+
+# ==================== OS ====================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+
+# ==================== TEMP FILES ====================
+
+*.log
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+
+# Build error logs
+build_error_log.txt
+
+# ==================== DATA FILES ====================
+
+# CSV data files (may contain sensitive trading data)
+pentosh_all.csv
+pentosh1_news_feed.csv
+filter/*.csv
+news_service/*.csv
+macro_service/*.csv
+tools/*.csv
+rag/*.csv
+
+# JSONL data files
+*.jsonl
+output/*.jsonl
+telegram_fetch/output/*.jsonl
+rag/*.jsonl
+
+# Keep example files
+!config.json.example
+!env.example
+
+# ==================== DOCKER ====================
+
+# Docker volumes
+docker-data/
+
+# ==================== MISC ====================
+
+# Coverage reports
+coverage/
+*.cover
+*.coverage
+htmlcov/
+
+# Profiling
+*.prof
+
+# Secrets
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
